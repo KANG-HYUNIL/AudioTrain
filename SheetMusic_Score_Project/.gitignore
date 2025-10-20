@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+.env.*
+.cache/
+.ipynb_checkpoints/
+
+# Data & artifacts
+/data/
+outputs/
+artifacts/
+mlruns/
+logs/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Checkpoints
+checkpoints/
+*.ckpt
+*.pt
+*.pth

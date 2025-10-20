@@ -1,0 +1,19 @@
+seed: 42
+batch_size: 32
+epochs: 20
+optimizer: adam
+lr: 1e-3
+weight_decay: 1e-4
+kd:
+  enabled: true
+  alpha: 0.7
+  temperature: 4.0
+pruning:
+  enabled: true
+  global_unstructured_amount: 0.3
+  structured_ln_amount: 0.2
+logging:
+  mlflow:
+    enabled: true
+    experiment_name: audio-kd-prune
+    tracking_uri: ./mlruns

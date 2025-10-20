@@ -1,0 +1,12 @@
+teacher:
+  name: passt  # passt | ast | pann_cnn14
+  pretrained: true
+  checkpoint: null  # 경로가 있으면 우선 사용
+  num_classes: 14
+  temperature: 4.0
+
+student:
+  name: mobilenet_v2
+  width_mult: 0.75
+  pretrained: false
+  num_classes: 14
