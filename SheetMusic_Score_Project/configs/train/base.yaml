@@ -1,0 +1,29 @@
+# @package _group_
+# Lightweight training hyperparameters for smoke tests.
+
+seed: 42
+batch_size: 16
+epochs: 5
+optimizer: adamw
+lr: 3e-4
+weight_decay: 1e-4
+num_workers: 2
+device: auto   # auto | cpu | cuda
+val_ratio: 0.1
+amp: true
+
+kd:
+  enabled: false
+  alpha: 0.7
+  temperature: 4.0
+
+pruning:
+  enabled: false
+  global_unstructured_amount: 0.3
+  structured_ln_amount: 0.2
+
+logging:
+  mlflow:
+    enabled: true
+    experiment_name: audio-kd-prune
+    tracking_uri: ./mlruns

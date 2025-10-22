@@ -1,0 +1,15 @@
+# Root Hydra configuration that composes data, augmentation, model, and training configs.
+#
+# Usage examples (PowerShell):
+#   python -m scripts.train_kd
+#   python -m scripts.train_kd data=nsynth data.families="[guitar,flute,keyboard]" train.batch_size=8
+#   python -m scripts.train_kd data=tinysol data.classes="[violin,flute,clarinet]"
+
+defaults:
+  - data: nsynth        # or tinysol
+  - aug: mel_16k
+  - model: student
+  - train: base
+  - _self_
+
+experiment_name: "TinyNSynth-Student-Baseline"

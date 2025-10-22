@@ -1,0 +1,24 @@
+# @package _group_
+# Log-Mel transform parameters and basic SpecAug switches for 16 kHz audio.
+
+enable: true
+sample_rate: 16000
+n_mels: 128
+n_fft: 1024
+hop_length: 256
+f_min: 20.0
+f_max: 8000.0
+log_mel: true
+normalize: true
+
+# Target number of frames on the time axis after collate crop/pad.
+# For 16 kHz audio with hop_length=256, ~62.5 fps → 512 frames ≈ 8.2 s
+target_frames: 512
+
+specaug:
+  enable: true       # wired later in dataloaders/augment.py
+  time_mask: 2
+  freq_mask: 2
+  # mask size as percentage of axis lengths
+  time_mask_pct: 0.10
+  freq_mask_pct: 0.15

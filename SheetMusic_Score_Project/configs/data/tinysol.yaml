@@ -1,0 +1,9 @@
+# @package _group_
+# TinySOL data configuration (folder-based). A downloader can be added separately.
+
+dataset: tinysol
+root: ./data
+prepare: false          # currently not used
+split: train
+classes: ["violin", "flute", "clarinet"]
+max_files_per_class: 100

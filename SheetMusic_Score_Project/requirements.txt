@@ -6,6 +6,7 @@ torchaudio>=2.2
 # Audio DSP
 librosa>=0.10
 soundfile>=0.12
+datasets>=2.18
 
 # Config & Logging
 hydra-core>=1.3

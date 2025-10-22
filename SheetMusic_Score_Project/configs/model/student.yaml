@@ -1,0 +1,7 @@
+# @package _group_
+# Student model configuration for the initial pipeline.
+
+arch: mobilenet_v3_small
+width_mult: 0.75
+num_classes: 3   # placeholder; derive from data at runtime
+pretrained: false
