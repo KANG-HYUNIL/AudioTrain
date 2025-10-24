@@ -98,7 +98,10 @@ class ComposeMelAndAug:
 
     def __call__(self, waveform: torch.Tensor, src_sr: int) -> torch.Tensor:
         feats = self.mel_transform(waveform, src_sr=src_sr)
+        # mel_transform returns (C=1, F, T); SpecAug expects (C, F, T)
         if self.specaug is not None:
+            if feats.dim() == 4 and feats.shape[0] == 1:
+                feats = feats.squeeze(0)
             feats = self.specaug(feats)
         return feats
 """

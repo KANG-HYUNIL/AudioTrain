@@ -1,48 +1,163 @@
-# Audio KD + Pruning Mini Project
+# Audio KD + Pruning Mini Project (NSynth-first)
 
-이 리포는 악기 인식(멀티라벨) + 소스 분리(stems) 엔드투엔드를 4주 내 완주하기 위한 스캐폴드입니다. 핵심은 Teacher–Student 지식 증류(KD), 프루닝, 경량 백본(MobileNet)로 Params/MACs를 줄이며 성능을 유지하는 것입니다.
+End-to-end scaffold to compare Knowledge Distillation (KD) and pruning strategies for audio instrument classification using log-mel spectrograms. Focus is on: student (MobileNet) vs KD (with a pretrained CNN teacher), single vs progressive pruning, and complete MLflow logging for Params/MACs/metrics.
 
-## 목표
+This project currently prioritizes NSynth (via small local subset creation); other dataset files are out of scope and may be removed or ignored during experiments.
 
-- Stage-1: TinySOL로 전처리→KD→프루닝→재-KD→로그→추론까지 완료
-- Stage-2: 예측 클래스 기반 stem 분리(Demucs/Spleeter 중 하나 연결)
-- Stage-3(선택): 문서/결과 표·그림 정리
-
-## 폴더 구조
+## Project structure
 
 ```
-audio-kd-prune/
-  configs/              # Hydra YAML: data.yaml, model.yaml, train.yaml, aug.yaml
-  datasets/             # TinySOL/IRMAS/OpenMIC 서브셋 다운로드/로더
-  dataloaders/          # torchaudio Log-Mel, 증강 파이프라인
-  models/               # Teacher(PaSST/AST), Student(MobileNet)
-  training/             # KD loss, loops, pruning, metrics
-  tools/                # MACs/Params, ONNX export
-  scripts/              # train_kd, prune_and_fineturn, infer_classify, separate_stems
-  notebooks/            # EDA/검증 노트북
-  README.md  LICENSE  requirements.txt
+configs/           # Hydra YAML (data, aug, model, train)
+dataloaders/       # Log-Mel pipeline, SpecAug, collate
+dataset_prepare/   # nsynth subset builder + folder dataset
+models/            # Student (MobileNet), Teacher (pretrained CNN factory)
+training/          # KD loss, loops, pruning, metrics
+tools/             # MACs profiler, ONNX (optional)
+scripts/           # train_kd, prune_and_finetune, run_experiments, GPU check
+notebooks/         # (optional) EDA
+requirements.txt   # Dependencies
 ```
 
-## 우선순위
+## Requirements
 
-- P0: TinySOL 엔드투엔드
-- P1: IRMAS/OpenMIC 부분셋 멀티라벨 1회 실험
-- P2: 분리 스크립트 연결(Demucs/Spleeter)
-- P3: 문서/결과 도표 정리 및 리팩토링
+- Windows (PowerShell) or cross-platform
+- Python 3.10+
+- FFmpeg installed (for torchaudio backend) recommended
 
-## 설치 안내(지금은 설치하지 마세요)
+Install deps (prefer a virtual environment):
 
-의존성 목록은 `requirements.txt`에 정리되어 있습니다. 추후 uv/venv 등 가상환경에서 설치합니다.
+```powershell
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
 
-## 데이터
+Start MLflow UI locally:
 
-- TinySOL(Zenodo) — 소용량, 단일 음표 솔로 악기
-- IRMAS(UPF/Zenodo) — 지배적 악기 인식(멀티라벨)
-- OpenMIC-2018(Zenodo) — 다중 라벨, 10초 클립
+```powershell
+mlflow ui --backend-store-uri .\mlruns --host 127.0.0.1 --port 5000
+```
 
-각 데이터셋은 `datasets/`의 스크립트로 부분 다운로드(≤1GB) 옵션을 제공합니다.
+## Dataset (NSynth subset, ≤1GB target)
 
-## 저작권/윤리 고지
+We stream NSynth from Hugging Face and materialize a small, class-balanced subset into a folder-of-wavs layout:
 
-- 공개 배포가 제한된 음원/모델 가중치를 저장소에 업로드하지 마세요.
-- Spleeter/Demucs 사용은 연구/개인 범위로 제한합니다. 각 라이선스 준수 필수.
+```
+data/nsynth/<family>/<index>.wav
+```
+
+Families/classes are configured in `configs/data/nsynth.yaml`. By default, `prepare: true` will create the subset on first run.
+
+## How the pipeline works
+
+1) Hydra composes configs from `configs/config.yaml` defaults:
+   - `data: nsynth`, `aug: mel_16k`, `model: student`, `train: base` => merged into `cfg.data/cfg.aug/cfg.model/cfg.train`.
+2) `scripts/train_kd.py` builds the dataset with `FolderAudioDataset` and applies `LogMelSpectrogram` (+ optional SpecAug for train).
+3) Batches are collated to a fixed time length via `dataloaders.collate.collate_fixed_length` (shape: B, C=1, F, T).
+4) Student model is built from `models.student_mobilenet.build_student_model` (MobileNet V2/V3 adapted to 1ch).
+5) If `train.kd.enabled=true`, a teacher is built from `models.teacher_passt.build_teacher_model` (ImageNet-pretrained CNN adapted to 1ch) and KD loss is used.
+6) Training/eval happens in `training.loops.fit` with AMP and MLflow logging per epoch.
+7) Params/MACs are profiled (thop) and logged.
+8) For pruning, `scripts/prune_and_finetune.py` loads a baseline checkpoint, applies single or progressive pruning via `training.pruning`, and fine-tunes (with or without KD).
+
+Metrics: accuracy, macro-F1; Artifacts: config snapshot, checkpoints, history JSON; Scalars: train loss, val acc/F1, KD components (kl/ce), Params, MACs.
+
+## Quickstart (PowerShell)
+
+1) Check CUDA availability and optionally install GPU wheels:
+
+```powershell
+python -m scripts.check_and_setup_gpu          # show torch/versions and CUDA availability
+python -m scripts.check_and_setup_gpu --install  # optional: attempt installing CUDA wheels (cu124)
+```
+
+2) Run a baseline student (Non-KD) on NSynth subset (it will prepare data if needed):
+
+```powershell
+python -m scripts.train_kd train.kd.enabled=false train.epochs=5 train.batch_size=16 ^
+  data.families="[guitar,flute,keyboard]" train.checkpoint_name=student_nonkd_none.pt
+```
+
+3) KD training (teacher defaults in `configs/model/student.yaml`):
+
+```powershell
+python -m scripts.train_kd train.kd.enabled=true train.kd.alpha=0.7 train.kd.temperature=4.0 ^
+  train.epochs=5 train.checkpoint_name=student_kd_none.pt
+```
+
+3.5) Fine-tune the Teacher first (recommended for stronger KD):
+
+```powershell
+# Train the teacher on your NSynth subset (no KD)
+# Set the output filename via model.teacher.checkpoint; it will be saved under train.checkpoint_dir
+python -m scripts.finetune_teacher ^
+  train.epochs=30 model.teacher.name=cnn_resnet18 model.teacher.freeze=false ^
+  model.teacher.checkpoint="teacher_resnet18_best.pt"
+
+# Then use the fine-tuned checkpoint for KD (frozen by default)
+python -m scripts.train_kd train.kd.enabled=true ^
+  model.teacher.checkpoint="teacher_resnet18_best.pt" model.teacher.freeze=true
+```
+
+4) Single pruning + fine-tune from a baseline checkpoint (Non-KD example):
+
+```powershell
+python -m scripts.prune_and_finetune train.kd.enabled=false train.pruning.enabled=true ^
+  train.pruning.mode=single train.checkpoint_name=student_nonkd_none.pt
+```
+
+5) Progressive pruning + fine-tune (KD example):
+
+```powershell
+python -m scripts.prune_and_finetune train.kd.enabled=true train.pruning.enabled=true ^
+  train.pruning.mode=progressive train.pruning.progressive_steps=3 ^
+  train.checkpoint_name=student_kd_none.pt
+```
+
+Interleaved progressive pruning (prune → short fine-tune → prune → ...):
+
+```powershell
+python -m scripts.prune_and_finetune train.pruning.mode=progressive ^
+  train.pruning.interleaved_finetune=true train.pruning.step_epochs=2 ^
+  train.pruning.remove_after_each=true
+```
+
+6) Run all 6 scenarios automatically:
+
+```powershell
+python -m scripts.run_experiments
+```
+
+Open MLflow UI to compare runs: http://127.0.0.1:5000 (if started locally).
+
+## Hyperparameter tuning
+
+- Log-mel: `configs/aug/mel_16k.yaml` (n_mels, n_fft, hop_length, SpecAug masks and percentages)
+- Student: `configs/model/student.yaml` (arch, width_mult)
+- KD: `configs/train/base.yaml` → `kd.alpha`, `kd.temperature`; Teacher spec: `configs/model/student.yaml` → `teacher.*`
+- Pruning: `configs/train/base.yaml` → `pruning.*` (mode, amounts, steps)
+
+Interleaved options:
+
+- `pruning.interleaved_finetune`: when true and mode=progressive, runs short fine-tunes between pruning steps
+- `pruning.step_epochs`: epochs per interleaved fine-tune step
+- `pruning.remove_after_each`: call prune.remove() after each step (recommended)
+
+Override via CLI for quick sweeps. Example:
+
+```powershell
+python -m scripts.train_kd aug.n_mels=64 aug.hop_length=160 train.kd.enabled=true train.kd.alpha=0.6
+```
+
+## Reproducibility & outputs
+
+- Checkpoints: `./checkpoints/<checkpoint_name>`
+- MACs/Params: logged to MLflow metrics; per-run config snapshot in artifacts
+- History: `training/history.json` artifact (per-epoch metrics)
+
+## Notes on datasets
+
+This project runs NSynth-first. Other dataset modules (IRMAS/OpenMIC) are not used in the current experiment plan. If they remain in the tree, ignore them; they will not be invoked by the scripts here.
+
+## License & usage
+
+This repository is for research/education. Respect all third-party licenses (datasets, pretrained models, separation tools). Do not upload copyrighted audio.

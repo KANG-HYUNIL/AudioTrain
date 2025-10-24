@@ -12,4 +12,4 @@ defaults:
   - train: base
   - _self_
 
-experiment_name: "TinyNSynth-Student-Baseline"
+experiment_name: "FineTune_Teacher_Model_cnn_resnet18 on_NSynth"

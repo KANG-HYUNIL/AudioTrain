@@ -7,5 +7,8 @@ dataset: nsynth
 root: ./data
 prepare: true          # set true to create the subset automatically (requires datasets package)
 split: train            # train | valid | test
-families: ["guitar", "flute", "keyboard"]
+families: [
+    "bass", "brass", "flute", "guitar", "keyboard",
+    "mallet", "organ", "reed", "string", "synth_lead", "vocal"
+]
 max_per_family: 100     # clips per label

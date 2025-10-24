@@ -1,6 +1,11 @@
 """
-torchaudio 기반 Log-Mel 변환 파이프라인 스텁.
-TODO: implement waveform -> log-mel tensor transformation with normalization.
+Log-Mel 변환 파이프라인
+
+입력 waveform(C, T) → mono → (선택) resample → MelSpectrogram → (선택) dB 스케일 → (선택) 정규화
+
+출력 텐서 형태 계약
+- 각 샘플 당 (C=1, F=n_mels, T=frames) 3D 텐서로 반환합니다. (배치 차원 없이)
+    DataLoader/collate 단계에서 (B, C, F, T)로 스택됩니다.
 """
 
 from typing import Optional
@@ -64,30 +69,31 @@ class LogMelSpectrogram(torch.nn.Module):
             torch.Tensor: Transformed Log-Mel spectrogram tensor. The full pipeline will
             return Log-Mel Tensor of shape (B, 1, n_mels, frames).
         """
-        # TODO: implement actual transform with torchaudio
-
         x = waveform
 
-        # Resampling
+        # Resampling (only when source sr provided and differs)
         if src_sr is not None:
             x = self.resample(x, src_sr)
-        
-        # to mono
+
+        # To mono
         x = self.to_mono(x)
 
-        # to mel spectrogram
+        # To Mel spectrogram (returns (1, n_mels, frames))
         x = self.to_mel_spectrogram(x)
 
-        # log scaling
+        # Log scaling
         if self.log_mel:
             x = self.log_scale(x)
 
-        # normalization
+        # Normalization
         if self.normalize:
             x = self.normalize_mel(x)
 
-
-        return x  # placeholder
+        # Ensure final shape is (C=1, F, T)
+        if x.dim() == 4 and x.shape[0] == 1:
+            # (B=1, 1, F, T) -> (1, F, T)
+            x = x.squeeze(0)
+        return x
     
 
     # waveform mono 평균화 메서드, Channel 차원을 평균해 mono (channel=1)로 변환
@@ -181,15 +187,14 @@ class LogMelSpectrogram(torch.nn.Module):
             
         """
 
-        # Ensure mel_spectrogram is on the same device as waveform
+    # Ensure mel_spectrogram is on the same device as waveform
         self.mel_spectrogram = self.mel_spectrogram.to(waveform.device)
 
         if waveform.dim() == 2:
             if waveform.size(0) != 1:
                 raise ValueError("Input waveform must have shape (1, T) for mono audio.")
-            # (1, T) -> (n_mels, frames)
+            # (1, T) -> (1, n_mels, frames)
             mel_spec = self.mel_spectrogram(waveform)  # (1, n_mels, frames)
-            mel_spec = mel_spec.unsqueeze(0)  # (1, 1, n_mels, frames)
             return mel_spec
 
         
@@ -198,6 +203,7 @@ class LogMelSpectrogram(torch.nn.Module):
                 raise ValueError("Input waveform must have shape (B, 1, T) for mono audio.")
 
             mel_spec = self.mel_spectrogram(waveform)  # (B, 1, n_mels, frames)
+            # For a single-sample path we keep batch; caller will squeeze to (1, F, T)
             return mel_spec
 
 

@@ -1,22 +1,7 @@
 """
 Student model factory for MobileNet backbones (V3-Small / V2) adapted for audio spectrograms.
 
-This module provides utilities to:
-- build a MobileNet model with 1-channel input (for log-mel spectrograms),
-- replace the classifier head to match the number of classes,
-- optionally start from torchvision pretrained weights (for 3ch models) and
-  adapt the first convolution weights to mono by RGB-average.
-
-Input shape contract
-- Expected: (B, C=1, F, T), where F is number of mel bins and T is time frames.
-- MobileNet models include AdaptiveAvgPool2d(1) before the classifier, so variable
-  (F, T) is supported without changes.
-
-Usage
-    model = build_student_model(
-        arch="mobilenet_v3_small", width_mult=0.75, num_classes=K,
-        in_channels=1, pretrained=False
-    )
+Registered names: "mobilenet_v3_small", "mobilenet_v2".
 """
 
 from __future__ import annotations
@@ -25,6 +10,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 from torchvision import models as tvm
+from . import register_student
 import math
 
 
@@ -148,7 +134,8 @@ def _replace_classifier(model: nn.Module, num_classes: int) -> None:
     raise RuntimeError("Could not replace classifier head automatically.")
 
 
-def build_student_model(
+@register_student("mobilenet_v3_small")
+def _build_mobilenet_v3_small(
     arch: str = "mobilenet_v3_small",
     *,
     width_mult: float = 0.75,
@@ -156,37 +143,12 @@ def build_student_model(
     in_channels: int = 1,
     pretrained: bool = False,
 ) -> nn.Module:
-    """
-    Build a MobileNet student model adapted for mono spectrogram inputs.
-
-    Args:
-        arch: Backbone name: "mobilenet_v3_small" or "mobilenet_v2".
-        width_mult: Width multiplier for channels (0.5 ~ 1.0 typically).
-        num_classes: Number of output classes (logits).
-        in_channels: Input channels; for log-mel use 1.
-        pretrained: Use torchvision's pretrained ImageNet weights (3ch) and adapt
-                    first conv to mono by averaging RGB weights.
-
-    Returns:
-        nn.Module: Configured MobileNet model.
-    """
-    if arch == "mobilenet_v3_small":
-        # torchvision 0.14+: weights API; keep compatibility
-        try:
-            weights = tvm.MobileNet_V3_Small_Weights.DEFAULT if pretrained else None
-            model = tvm.mobilenet_v3_small(weights=weights)
-        except Exception:
-            model = tvm.mobilenet_v3_small(pretrained=pretrained)
-        # Apply width multiplier if available (torchvision's mobilenet_v3_small does not take width_mult directly)
-        # For simplicity, we keep default channels; if strict width_mult is needed, switch to timm.
-    elif arch == "mobilenet_v2":
-        try:
-            weights = tvm.MobileNet_V2_Weights.DEFAULT if pretrained else None
-            model = tvm.mobilenet_v2(weights=weights, width_mult=width_mult)
-        except Exception:
-            model = tvm.mobilenet_v2(pretrained=pretrained, width_mult=width_mult)
-    else:
-        raise ValueError(f"Unsupported student arch: {arch}")
+    # torchvision 0.14+: weights API; keep compatibility
+    try:
+        weights = tvm.MobileNet_V3_Small_Weights.DEFAULT if pretrained else None
+        model = tvm.mobilenet_v3_small(weights=weights)
+    except Exception:
+        model = tvm.mobilenet_v3_small(pretrained=pretrained)
 
     # Adapt first conv to mono (and handle pretrained weight adaptation)
     _replace_first_conv_to_mono(model, in_channels=in_channels, pretrained=pretrained)
@@ -194,6 +156,26 @@ def build_student_model(
     # Replace classifier head
     _replace_classifier(model, num_classes=num_classes)
 
+    return model
+
+
+@register_student("mobilenet_v2")
+def _build_mobilenet_v2(
+    arch: str = "mobilenet_v2",
+    *,
+    width_mult: float = 0.75,
+    num_classes: int = 3,
+    in_channels: int = 1,
+    pretrained: bool = False,
+) -> nn.Module:
+    try:
+        weights = tvm.MobileNet_V2_Weights.DEFAULT if pretrained else None
+        model = tvm.mobilenet_v2(weights=weights, width_mult=width_mult)
+    except Exception:
+        model = tvm.mobilenet_v2(pretrained=pretrained, width_mult=width_mult)
+
+    _replace_first_conv_to_mono(model, in_channels=in_channels, pretrained=pretrained)
+    _replace_classifier(model, num_classes=num_classes)
     return model
 """
 Student model: MobileNetV2/V3 small for multi-label classification.

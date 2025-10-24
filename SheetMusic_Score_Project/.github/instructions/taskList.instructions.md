@@ -3,7 +3,7 @@ applyTo: '**'
 ---
 Step 1·2 작업을 위한 “명령문” 사양(다른 에이전트에게 전달용)
 공통 목표
-P0를 위해 TinySOL로 학생 모델 단독 → Teacher 통합 KD → 프루닝 전단계까지 가동 가능한 엔드투엔드 최소 파이프라인 확립.
+P0를 위해 NSynth로 학생 모델 단독 → Teacher 통합 KD → 프루닝 전단계까지 가동 가능한 엔드투엔드 최소 파이프라인 확립.
 모든 실험은 MLflow에 기록. 설정은 Hydra YAML로 관리.
 Step 0. 준비(전제 조건)
 
@@ -14,13 +14,13 @@ Step 0. 준비(전제 조건)
 
 python -c "import torch;print(torch.cuda.is_available())"가 True(GPU) 또는 False(CPU)로 명확.
 mlflow ui가 열리고 빈 실험 페이지가 보임.
-Step 1. TinySOL + 학생 단독 파이프라인 구축
+Step 1. NSynth + 학생 단독 파이프라인 구축
 목표
 
-TinySOL 서브셋(≤1GB) 다운로드→Mel 변환→학생(MobileNet) 단독 학습/검증→MLflow 로깅까지 한 번에 실행.
+NSynth 서브셋(≤1GB) 다운로드→Mel 변환→학생(MobileNet) 단독 학습/검증→MLflow 로깅까지 한 번에 실행.
 작업 항목
-[코드] tinysol.py
-download_tinysol(root, classes, max_total_size_mb): Zenodo에서 필요한 파일만 받도록 부분 다운로드 구현.
+[코드] NSynth.py
+download_NSynth(root, classes, max_total_size_mb): Zenodo에서 필요한 파일만 받도록 부분 다운로드 구현.
 get_items(split="train/val"): (path, label) 목록 생성. 클래스 인덱스 매핑 저장.
 [코드] mel_pipeline.py
 파이프라인: load with torchaudio → resample(16k~32k) → mono → MelSpectrogram → Log-Mel → 정규화(Tensor[C, F, T]).
@@ -29,7 +29,7 @@ get_items(split="train/val"): (path, label) 목록 생성. 클래스 인덱스 �
 최소: SpecAug(Time/Freq mask) on Log-Mel. 이후 Noise/Gain/RIR/코덱는 비활성 기본값으로 스위치만 준비.
 [코드] student_mobilenet.py
 torchvision MobileNetV2 또는 MobileNetV3-Small 로드, width_mult 설정.
-최종 classifier를 num_classes에 맞게 교체. 출력은 로짓. TinySOL은 멀티클래스 기준으로 CE 사용.
+최종 classifier를 num_classes에 맞게 교체. 출력은 로짓. NSynth은 멀티클래스 기준으로 CE 사용.
 [코드] metrics.py
 멀티클래스 Acc, macro-F1 구현.
 [코드] loops.py
@@ -38,18 +38,18 @@ MLflow 로깅 훅: 파라미터(config 스냅샷), 학습/검증 손실/지표, 
 [코드] train_kd.py
 Hydra @hydra.main로 configs/{data,model,train,aug}.yaml 읽고 위 요소 조립.
 [설정] configs/*
-data.yaml: dataset=tinysol, root=./data, classes=[소수 악기], max_total_size_mb=1000, split 비율.
+data.yaml: dataset=NSynth, root=./data, classes=[소수 악기], max_total_size_mb=1000, split 비율.
 model.yaml: student={arch: mobilenet_v3_small, width_mult: 0.75, num_classes: K}.
 train.yaml: epochs=5~20, batch_size=32, lr=3e-4, optimizer=adamw, amp=true, num_workers=2, seed, device=auto.
 aug.yaml: sr=16000, n_fft=1024, hop=160, n_mels=128, fmin=20, fmax=8000, specaug={time_mask:02, freq_mask:02}.
 [검증] 샌티 체크
 작은 서브셋(예: 클래스 3개×각 50샘플)으로 1~3epoch 오버핏되는지 확인.
 [로깅] MLflow
-실험명: TinySOL-Student-Baseline. 파라미터/지표/ckpt 아티팩트 기록.
+실험명: NSynth-Student-Baseline. 파라미터/지표/ckpt 아티팩트 기록.
 실행 커맨드(예시)
 
 uv 환경 활성화 후:
-python -m scripts.train_kd data.dataset=tinysol data.root=./data data.classes="[violin,flute,clarinet]" train.epochs=5
+python -m scripts.train_kd data.dataset=NSynth data.root=./data data.classes="[violin,flute,clarinet]" train.epochs=5
 완료 기준(DoD)
 학습/검증 루프가 에러 없이 돌고, MLflow에 런이 생성되며 ckpt가 업로드.
 작은 서브셋에서 train acc/f1이 빠르게 상승(오버핏 신호).
@@ -74,7 +74,7 @@ thop으로 학생 모델 Params/MACs 측정. 결과를 MLflow 아티팩트/메�
 teacher={name: passt_base|ast_base, checkpoint: <hf-id-or-path>, freeze: true}
 kd={enabled: true, T: 3.0, alpha: 0.7}
 [실험] 비교
-동일 TinySOL 서브셋에서 학생 단독 vs KD 학습 비교(epochs/seed 동일).
+동일 NSynth 서브셋에서 학생 단독 vs KD 학습 비교(epochs/seed 동일).
 최적 threshold(멀티클래스는 불필요, 멀티라벨 전환 시만) 규칙 명시.
 실행 커맨드(예시)
 
@@ -83,7 +83,7 @@ python -m tools.profile_macs model.student.arch=mobilenet_v3_small model.student
 완료 기준(DoD)
 
 KD 모드에서 학습/검증이 정상 수행되고 MLflow에 KD 파라미터/지표가 기록.
-학생 단독 대비 검증 Acc/F1이 동일 또는 향상(소규모 TinySOL 기준 소폭↑ 기대).
+학생 단독 대비 검증 Acc/F1이 동일 또는 향상(소규모 NSynth 기준 소폭↑ 기대).
 MACs/Params 리포트가 MLflow에 아티팩트로 저장.
 추가 메모
 

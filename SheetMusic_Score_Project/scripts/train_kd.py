@@ -9,19 +9,22 @@ will be added in subsequent iterations.
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
 
 import hydra
+import mlflow
 from omegaconf import DictConfig, OmegaConf
 
 # Local utilities
 from dataset_prepare.folder_audio import FolderAudioDataset
 from dataloaders.collate import collate_fixed_length
 from training.loops import fit
-from models.student_mobilenet import build_student_model
+from models import build_teacher_model, build_student_model
+from tools.profile_macs import profile_model
 
 try:
     # Optional: NSynth subset creator (uses HF datasets)
@@ -70,7 +73,13 @@ def _build_mel_transform(aug_cfg, *, train_mode: bool = True) -> Optional[Any]:
     try:
         from dataloaders.augment import SpecAugment, ComposeMelAndAug
         if train_mode and getattr(aug_cfg, "specaug", None) and aug_cfg.specaug.enable:
-            specaug = SpecAugment()
+            specaug = SpecAugment(
+                max_time_mask_pct=float(getattr(aug_cfg.specaug, "time_mask_pct", 0.10)),
+                max_freq_mask_pct=float(getattr(aug_cfg.specaug, "freq_mask_pct", 0.15)),
+                num_time_masks=int(getattr(aug_cfg.specaug, "time_mask", 2)),
+                num_freq_masks=int(getattr(aug_cfg.specaug, "freq_mask", 2)),
+                mask_value=0.0,
+            )
             return ComposeMelAndAug(mel, specaug)
     except Exception as e:
         # If augment module is missing or fails, just return mel
@@ -202,31 +211,171 @@ def main(cfg: DictConfig) -> None:
     width_mult = float(getattr(model_cfg, "width_mult", 0.75))
     pretrained = bool(getattr(model_cfg, "pretrained", False))
 
-    student = build_student_model(
+    student = cast(nn.Module, build_student_model(
         arch=arch,
         width_mult=width_mult,
         num_classes=num_classes,
         in_channels=1,
         pretrained=pretrained,
-    ).to(device)
+    )).to(device)
 
-    # Train end-to-end (student-only for now)
-    ckpt_dir = Path("checkpoints")
+    # Optional teacher model for KD
+    kd_cfg = cfg.train.kd
+    teacher = None
+    if bool(getattr(kd_cfg, "enabled", False)):
+        tconf = getattr(model_cfg, "teacher", None)
+        teacher_name = str(getattr(tconf, "name", "cnn_resnet18")) if tconf is not None else "cnn_resnet18"
+        teacher_pretrained = bool(getattr(tconf, "pretrained", True)) if tconf is not None else True
+        teacher_freeze = bool(getattr(tconf, "freeze", True)) if tconf is not None else True
+        teacher = cast(nn.Module, build_teacher_model(
+            name=teacher_name, num_classes=num_classes, pretrained=teacher_pretrained, freeze=teacher_freeze
+        )).to(device)
+        # Optional: load a fine-tuned teacher checkpoint if provided
+        teacher_ckpt = str(getattr(tconf, "checkpoint", "")) if tconf is not None else ""
+        if teacher_ckpt:
+            # Resolve as <checkpoint_dir>/<filename>
+            ckpt_dir_t = Path(getattr(cfg.train, "checkpoint_dir", "checkpoints"))
+            ckpt_path = ckpt_dir_t / Path(teacher_ckpt).name
+            if ckpt_path.exists():
+                state = torch.load(str(ckpt_path), map_location=device)
+                model_state = state.get("model_state", state)
+                missing, unexpected = teacher.load_state_dict(model_state, strict=False)
+                if missing or unexpected:
+                    print(f"[Teacher-CKPT] Loaded with missing={len(missing)} unexpected={len(unexpected)} keys")
+            else:
+                print(f"[WARN] Teacher checkpoint not found: {ckpt_path}")
+
+    # Train end-to-end
+    ckpt_dir = Path(getattr(cfg.train, "checkpoint_dir", "checkpoints"))
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = str(ckpt_dir / "student_best.pt")
+    ckpt_name = str(getattr(cfg.train, "checkpoint_name", "student_best.pt"))
+    ckpt_path = str(ckpt_dir / ckpt_name)
 
-    history = fit(
-        student,
-        train_loader,
-        val_loader,
-        device,
-        epochs=int(cfg.train.epochs),
-        lr=float(cfg.train.lr),
-        weight_decay=float(cfg.train.weight_decay),
-        amp=bool(cfg.train.amp),
-        ckpt_path=ckpt_path,
-        num_classes=num_classes,
-    )
+    # MLflow configuration
+    mlcfg = cfg.train.logging.mlflow
+    ml_enabled = bool(getattr(mlcfg, "enabled", False))
+
+    if ml_enabled:
+        # Use absolute tracking URI rooted at original CWD to avoid Hydra run dir nesting
+        try:
+            orig_cwd = Path(hydra.utils.get_original_cwd())
+        except Exception:
+            orig_cwd = Path.cwd()
+        tracking_uri = str((orig_cwd / str(mlcfg.tracking_uri)).resolve())
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(str(mlcfg.experiment_name))
+
+        run_name = str(getattr(cfg, "experiment_name", "run"))
+        with mlflow.start_run(run_name=run_name):
+            # Log composed config
+            mlflow.log_text(OmegaConf.to_yaml(cfg), artifact_file="configs/composed.yaml")
+
+            # Log key params
+            params = {
+                # Data
+                "data.dataset": str(cfg.data.dataset),
+                "data.split": str(getattr(cfg.data, "split", "")),
+                "data.classes": ",".join(classes),
+                "data.max_per_class": int(max_per_class),
+                "data.num_classes": int(num_classes),
+                "data.n_train": int(len(train_ds)),
+                "data.n_val": int(len(val_ds)),
+                # Aug
+                "aug.sample_rate": int(cfg.aug.sample_rate),
+                "aug.n_mels": int(cfg.aug.n_mels),
+                "aug.n_fft": int(cfg.aug.n_fft),
+                "aug.hop_length": int(cfg.aug.hop_length),
+                "aug.target_frames": int(getattr(cfg.aug, "target_frames", 0) or 0),
+                "aug.specaug": bool(getattr(cfg.aug.specaug, "enable", False)),
+                # Model
+                "model.arch": str(arch),
+                "model.width_mult": float(width_mult),
+                "model.pretrained": bool(pretrained),
+                # Teacher
+                "kd.enabled": bool(getattr(kd_cfg, "enabled", False)),
+                "kd.alpha": float(getattr(kd_cfg, "alpha", 0.7)),
+                "kd.temperature": float(getattr(kd_cfg, "temperature", 4.0)),
+                "teacher.name": str(getattr(model_cfg, "teacher", {}).get("name", "resnet18")),
+                "teacher.pretrained": bool(getattr(model_cfg, "teacher", {}).get("pretrained", True)),
+                "teacher.freeze": bool(getattr(model_cfg, "teacher", {}).get("freeze", True)),
+                # Train
+                "train.batch_size": int(cfg.train.batch_size),
+                "train.epochs": int(cfg.train.epochs),
+                "train.lr": float(cfg.train.lr),
+                "train.weight_decay": float(cfg.train.weight_decay),
+                "train.amp": bool(cfg.train.amp),
+                "train.val_ratio": float(cfg.train.val_ratio),
+                # System
+                "device": str(device),
+                "seed": int(cfg.train.seed),
+            }
+            mlflow.log_params(params)
+
+            # Model size (params)
+            num_params = sum(p.numel() for p in student.parameters())
+            mlflow.log_metric("model_params", int(num_params))
+
+            # Profile MACs with a nominal input (B=1, C=1, F=n_mels, T=target_frames)
+            try:
+                tf = int(getattr(cfg.aug, "target_frames", 128) or 128)
+                prof = profile_model(student, input_shape=(1, 1, int(cfg.aug.n_mels), tf))
+                if prof.get("macs", -1) != -1:
+                    mlflow.log_metric("model_macs", int(prof["macs"]))
+            except Exception as e:
+                print(f"[WARN] Profile MACs failed: {e}")
+
+            history = fit(
+                student,
+                train_loader,
+                val_loader,
+                device,
+                epochs=int(cfg.train.epochs),
+                lr=float(cfg.train.lr),
+                weight_decay=float(cfg.train.weight_decay),
+                amp=bool(cfg.train.amp),
+                ckpt_path=ckpt_path,
+                num_classes=num_classes,
+                mlflow_enabled=True,
+                kd_enabled=bool(getattr(kd_cfg, "enabled", False)),
+                teacher=teacher,
+                kd_alpha=float(getattr(kd_cfg, "alpha", 0.7)),
+                kd_temperature=float(getattr(kd_cfg, "temperature", 4.0)),
+                early_stopping=bool(getattr(cfg.train.early_stopping, "enabled", False)),
+                es_patience=int(getattr(cfg.train.early_stopping, "patience", 5)),
+                es_min_delta=float(getattr(cfg.train.early_stopping, "min_delta", 0.0)),
+            )
+
+            # Log history as an artifact (JSON)
+            import json, tempfile
+
+            with tempfile.TemporaryDirectory() as td:
+                hist_path = Path(td) / "history.json"
+                hist_path.write_text(json.dumps(history, indent=2))
+                mlflow.log_artifact(str(hist_path), artifact_path="training")
+
+            # Log best checkpoint
+            if Path(ckpt_path).exists():
+                mlflow.log_artifact(ckpt_path, artifact_path="checkpoints")
+
+    else:
+        history = fit(
+            student,
+            train_loader,
+            val_loader,
+            device,
+            epochs=int(cfg.train.epochs),
+            lr=float(cfg.train.lr),
+            weight_decay=float(cfg.train.weight_decay),
+            amp=bool(cfg.train.amp),
+            ckpt_path=ckpt_path,
+            num_classes=num_classes,
+            mlflow_enabled=False,
+            kd_enabled=bool(getattr(kd_cfg, "enabled", False)),
+            teacher=teacher,
+            kd_alpha=float(getattr(kd_cfg, "alpha", 0.7)),
+            kd_temperature=float(getattr(kd_cfg, "temperature", 4.0)),
+        )
+
     print(f"[Done] Training finished. Best checkpoint: {ckpt_path}")
 # ...existing code...
 
