@@ -1,0 +1,6 @@
+enable: false
+fuse_on_export: true
+branches:
+  include_1x1: true
+  include_3x1: true
+  include_1x3: true

@@ -15,7 +15,7 @@ import numpy as np
 import torch
 import torchaudio
 from datasets import load_dataset, DatasetInfo
-
+from dataset_prepare import register_preparer
 
 # Canonical NSynth instrument families (string labels)
 HF_NSYNTH_FAMILIES = [
@@ -196,6 +196,7 @@ def prepare_hf_audio_subset(
     return out_dir
 
 
+@register_preparer("nsynth")
 def prepare_nsynth_subset(
     root: Path,
     split: str = "train",

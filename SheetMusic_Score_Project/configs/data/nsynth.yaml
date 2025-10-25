@@ -1,11 +1,12 @@
-# @package _group_
+
+
 # NSynth data configuration for Hydra.
 # This config instructs the pipeline to optionally prepare a local subset
 # via Hugging Face Datasets streaming, then use the folder-of-wavs layout.
 
 dataset: nsynth
 root: ./data
-prepare: true          # set true to create the subset automatically (requires datasets package)
+prepare: false          # set true to create the subset automatically (requires datasets package)
 split: train            # train | valid | test
 families: [
     "bass", "brass", "flute", "guitar", "keyboard",

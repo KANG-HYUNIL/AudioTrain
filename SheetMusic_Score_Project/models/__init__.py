@@ -13,6 +13,9 @@ from __future__ import annotations
 from typing import Callable, Dict
 
 import importlib
+# from . import student_mobilenet  # noqa: F401
+# from . import teacher_passt  # noqa: F401
+# from . import teacher_vit  # noqa: F401
 
 # Registries
 _STUDENT_BUILDERS: Dict[str, Callable[..., object]] = {}

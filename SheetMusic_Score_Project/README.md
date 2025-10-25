@@ -70,64 +70,67 @@ python -m scripts.check_and_setup_gpu          # show torch/versions and CUDA av
 python -m scripts.check_and_setup_gpu --install  # optional: attempt installing CUDA wheels (cu124)
 ```
 
-2) Run a baseline student (Non-KD) on NSynth subset (it will prepare data if needed):
+---
 
-```powershell
-python -m scripts.train_kd train.kd.enabled=false train.epochs=5 train.batch_size=16 ^
-  data.families="[guitar,flute,keyboard]" train.checkpoint_name=student_nonkd_none.pt
-```
+## Scenario-based Experiment Execution
 
-3) KD training (teacher defaults in `configs/model/student.yaml`):
+Select Yaml for each Scenario
 
-```powershell
-python -m scripts.train_kd train.kd.enabled=true train.kd.alpha=0.7 train.kd.temperature=4.0 ^
-  train.epochs=5 train.checkpoint_name=student_kd_none.pt
-```
+1. **Non-KD, No Pruning**
+   - `configs/train/train_nonKD_nonPruning.yaml` 사용
+   - run: 
+     ```powershell
+     python -m scripts.train_kd
+     ```
 
-3.5) Fine-tune the Teacher first (recommended for stronger KD):
+2. **Non-KD, Single Pruning**
+   - `configs/train/train_nonKD_singlePruning.yaml` 사용
+   - run: 
+     ```powershell
+     python -m scripts.prune_and_finetune
+     ```
 
-```powershell
-# Train the teacher on your NSynth subset (no KD)
-# Set the output filename via model.teacher.checkpoint; it will be saved under train.checkpoint_dir
-python -m scripts.finetune_teacher ^
-  train.epochs=30 model.teacher.name=cnn_resnet18 model.teacher.freeze=false ^
-  model.teacher.checkpoint="teacher_resnet18_best.pt"
+3. **Non-KD, Progressive Pruning**
+   - `configs/train/train_nonKD_progressivePruning.yaml` 사용
+   - run: 
+     ```powershell
+     python -m scripts.prune_and_finetune
+     ```
 
-# Then use the fine-tuned checkpoint for KD (frozen by default)
-python -m scripts.train_kd train.kd.enabled=true ^
-  model.teacher.checkpoint="teacher_resnet18_best.pt" model.teacher.freeze=true
-```
+4. **KD, No Pruning**
+   - `configs/train/train_KD_nonPruning.yaml` 사용
+   - run: 
+     ```powershell
+     python -m scripts.train_kd
+     ```
 
-4) Single pruning + fine-tune from a baseline checkpoint (Non-KD example):
+5. **KD, Single Pruning**
+   - `configs/train/train_KD_singlePruning.yaml` 사용
+   - run: 
+     ```powershell
+     python -m scripts.prune_and_finetune
+     ```
 
-```powershell
-python -m scripts.prune_and_finetune train.kd.enabled=false train.pruning.enabled=true ^
-  train.pruning.mode=single train.checkpoint_name=student_nonkd_none.pt
-```
+6. **KD, Progressive Pruning**
+   - `configs/train/train_KD_progressivePruning.yaml` 사용
+   - run: 
+     ```powershell
+     python -m scripts.prune_and_finetune
+     ```
 
-5) Progressive pruning + fine-tune (KD example):
+**실행 방법:**
+1) `configs/config.yaml`,  `defaults.train` -> change scenario by setting yaml
+   예시:
+   ```yaml
+   defaults:
+     - data: nsynth
+     - aug: mel_16k
+     - model: student
+     - train: train_KD_singlePruning  # 원하는 시나리오로 변경
+   ```
+2) 
 
-```powershell
-python -m scripts.prune_and_finetune train.kd.enabled=true train.pruning.enabled=true ^
-  train.pruning.mode=progressive train.pruning.progressive_steps=3 ^
-  train.checkpoint_name=student_kd_none.pt
-```
-
-Interleaved progressive pruning (prune → short fine-tune → prune → ...):
-
-```powershell
-python -m scripts.prune_and_finetune train.pruning.mode=progressive ^
-  train.pruning.interleaved_finetune=true train.pruning.step_epochs=2 ^
-  train.pruning.remove_after_each=true
-```
-
-6) Run all 6 scenarios automatically:
-
-```powershell
-python -m scripts.run_experiments
-```
-
-Open MLflow UI to compare runs: http://127.0.0.1:5000 (if started locally).
+**MLflow UI**: http://127.0.0.1:5000 
 
 ## Hyperparameter tuning
 

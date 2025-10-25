@@ -1,0 +1,4 @@
+enable: false
+alpha: 0.5
+temp: 4.0
+teacher_ckpts: []

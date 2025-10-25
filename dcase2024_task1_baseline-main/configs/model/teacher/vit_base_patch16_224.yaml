@@ -1,0 +1,7 @@
+# ViT-Base (Transformer teacher 예시)
+name: vit_base_patch16_224
+pretrained: true
+input_shape: [1, 224, 224]
+num_classes: 10
+ckpt_path: null
+notes: "Transformer teacher, HuggingFace ViT-Base, KD ensemble 실험용"

@@ -1,0 +1,11 @@
+dataset:  musical_instrument_sound
+root: ./data
+
+prepare: false          # set true to create the subset automatically (requires datasets package)
+split: train            # train | valid | test
+
+families: [
+    "Sound_Guitar", "Sound_Drum", "Sound_Piano", "Sound_Violin"
+
+]
+max_per_family: 700     # clips per label

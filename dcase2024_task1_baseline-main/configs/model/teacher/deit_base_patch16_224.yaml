@@ -1,0 +1,7 @@
+# DeiT-Base (논문 teacher 예시)
+name: deit_base_patch16_224
+pretrained: true
+input_shape: [1, 224, 224]
+num_classes: 10
+ckpt_path: null
+notes: "논문 teacher baseline, HuggingFace DeiT-Base, KD ensemble에 사용"

@@ -1,5 +1,5 @@
-# @package _group_
-# Lightweight training hyperparameters for smoke tests.
+
+
 
 seed: 42
 batch_size: 16
@@ -34,7 +34,7 @@ logging:
   mlflow:
     enabled: true
     experiment_name: audio-kd-prune
-    tracking_uri: ./mlruns
+    tracking_uri: file:./mlruns
 
 # Checkpointing
 checkpoint_dir: ./checkpoints

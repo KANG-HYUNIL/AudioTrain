@@ -1,16 +1,13 @@
 
-
-# Student model configuration for the initial pipeline.
-
-arch: mobilenet_v3_small
+arch: multibranch
 width_mult: 0.75
-# num_classes: 3   # placeholder; derive from data at runtime
 pretrained: false
+reparameterize: true  # If true, call model.reparameterize() after training
 
 # Teacher settings (used when train.kd.enabled=true)
 teacher:
   name: cnn_resnet18       # cnn_resnet18 | cnn_efficientnet_b0 | cnn_mobilenet_v3_large | vit_b16 | vit_s16
   pretrained: true
-  freeze: false
+  freeze: true
   # Optional fine-tuned teacher checkpoint filename (saved/loaded under train.checkpoint_dir)
   checkpoint: "teacher_resnet18_best.pt"

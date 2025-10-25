@@ -1,0 +1,8 @@
+# RepVGG-A0 (RepConv student 예시)
+name: repvgg_a0
+pretrained: false
+input_shape: [1, 128, 128]
+num_classes: 10
+repconv: true
+ckpt_path: null
+notes: "RepConv 병렬 kernel + reparameterization student, 논문 실험용"

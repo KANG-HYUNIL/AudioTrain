@@ -1,0 +1,8 @@
+project_name: DCASE24_Task1
+experiment_name: Baseline
+num_workers: 8
+precision: "32"
+evaluate: false
+ckpt_id: null
+orig_sample_rate: 44100
+subset: 100

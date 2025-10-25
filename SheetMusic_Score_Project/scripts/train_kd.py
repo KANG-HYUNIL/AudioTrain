@@ -31,7 +31,7 @@ try:
     from dataset_prepare.nsynth import prepare_nsynth_subset
 except Exception:
     prepare_nsynth_subset = None  # type: ignore[assignment]
-
+from dataset_prepare import prepare_dataset
 
 def _resolve_device(name: str) -> torch.device:
     """Resolve device by config string: "auto" | "cpu" | "cuda"."""
@@ -86,6 +86,10 @@ def _build_mel_transform(aug_cfg, *, train_mode: bool = True) -> Optional[Any]:
         print(f"[WARN] SpecAug not applied: {e}")
     return mel
 
+def collate_train_fn(batch, target_frames):
+    return collate_fixed_length(batch, target_frames=target_frames, random_crop=True)
+def collate_val_fn(batch, target_frames):
+    return collate_fixed_length(batch, target_frames=target_frames, random_crop=False)
 
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
@@ -112,23 +116,26 @@ def main(cfg: DictConfig) -> None:
     data_cfg = cfg.data
     data_root = Path(data_cfg.root)
 
-    # Optional NSynth subset preparation
-    if data_cfg.dataset == "nsynth":
-        data_dir = data_root / "nsynth"
-        if getattr(data_cfg, "prepare", False):
-            if prepare_nsynth_subset is None:
-                raise RuntimeError("dataset_prepare.nsynth not available. Install 'datasets' and check import path.")
-            data_dir = prepare_nsynth_subset(
-                root=data_root,
-                split=data_cfg.split,                  # 'train' | 'valid' | 'test'
-                families=list(data_cfg.families),
-                max_per_family=int(data_cfg.max_per_family),
-                target_sr=int(cfg.aug.sample_rate),
-            )
-        classes = list(data_cfg.families)
+    data_dir = None
 
+    if getattr(data_cfg, "prepare", False):
+        # Download or subset the dataset using the registered preparer
+        data_dir = prepare_dataset(
+            data_cfg.dataset,
+            root=data_root,
+            split=data_cfg.split,
+            families=list(getattr(data_cfg, "families", [])),
+            max_per_family=int(getattr(data_cfg, "max_per_family", 100)),
+            target_sr=int(cfg.aug.sample_rate),
+            # 기타 데이터셋별 인자 추가 가능
+        )
     else:
-        raise ValueError(f"Unsupported dataset selector: {data_cfg.dataset}")
+        # Use existing local folder structure
+        # 예: data/nsynth, data/tinysol 등
+        data_dir = data_root / data_cfg.dataset.lower()
+
+    # 이후 데이터셋 로딩
+    classes = list(getattr(data_cfg, "families", []))
 
     # Build Log-Mel transforms for train/val
     train_transform = _build_mel_transform(cfg.aug, train_mode=True)
@@ -175,11 +182,11 @@ def main(cfg: DictConfig) -> None:
 
     # Collate: fix time length to target_frames for consistent batch shapes
     target_frames = int(getattr(cfg.aug, "target_frames", 0) or 0)
-    collate_train = None
-    collate_val = None
-    if target_frames > 0:
-        collate_train = lambda b: collate_fixed_length(b, target_frames=target_frames, random_crop=True)
-        collate_val = lambda b: collate_fixed_length(b, target_frames=target_frames, random_crop=False)
+    # Collate functions are now defined at module level for multiprocessing compatibility
+ 
+    from functools import partial
+    collate_train = partial(collate_train_fn, target_frames=target_frames) if target_frames > 0 else None
+    collate_val = partial(collate_val_fn, target_frames=target_frames) if target_frames > 0 else None
 
     train_loader = DataLoader(
         train_ds,
@@ -257,11 +264,12 @@ def main(cfg: DictConfig) -> None:
 
     if ml_enabled:
         # Use absolute tracking URI rooted at original CWD to avoid Hydra run dir nesting
-        try:
-            orig_cwd = Path(hydra.utils.get_original_cwd())
-        except Exception:
-            orig_cwd = Path.cwd()
-        tracking_uri = str((orig_cwd / str(mlcfg.tracking_uri)).resolve())
+        # try:
+        #     orig_cwd = Path(hydra.utils.get_original_cwd())
+        # except Exception:
+        #     orig_cwd = Path.cwd()
+        #tracking_uri = str((orig_cwd / str(mlcfg.tracking_uri)).resolve())
+        tracking_uri = str(mlcfg.tracking_uri)
         mlflow.set_tracking_uri(tracking_uri)
         mlflow.set_experiment(str(mlcfg.experiment_name))
 
@@ -376,6 +384,14 @@ def main(cfg: DictConfig) -> None:
             kd_temperature=float(getattr(kd_cfg, "temperature", 4.0)),
         )
 
+    # Reparameterization (if enabled in model config)
+    if hasattr(model_cfg, "reparameterize") and bool(getattr(model_cfg, "reparameterize", False)):
+        if hasattr(student, "reparameterize"):
+            print("[Model] Running reparameterization...")
+            student.reparameterize()
+            print("[Model] Reparameterization complete.")
+        else:
+            print("[Model] reparameterize() not implemented for this model.")
     print(f"[Done] Training finished. Best checkpoint: {ckpt_path}")
 # ...existing code...
 

@@ -1,3 +1,4 @@
+ 
 """
 Prune model and run (optional) re-KD fine-tuning with MLflow logging.
 
@@ -34,7 +35,7 @@ from training.pruning import (
     remove_all_pruning,
 )
 from tools.profile_macs import profile_model
-
+from dataset_prepare import prepare_dataset
 
 def _resolve_device(name: str) -> torch.device:
     if name == "auto":
@@ -63,6 +64,14 @@ def _build_mel(aug_cfg, train_mode: bool):
         return ComposeMelAndAug(mel, spec)
     return mel
 
+def collate_train_fn(batch, target_frames):
+    from dataloaders.collate import collate_fixed_length
+    return collate_fixed_length(batch, target_frames=target_frames, random_crop=True)
+
+def collate_val_fn(batch, target_frames):
+    from dataloaders.collate import collate_fixed_length
+    return collate_fixed_length(batch, target_frames=target_frames, random_crop=False)
+
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
@@ -76,11 +85,19 @@ def main(cfg: DictConfig) -> None:
     data_cfg = cfg.data
     data_root = Path(data_cfg.root)
 
-    # TODO : Implement dataset loading and preprocessing
-    if data_cfg.dataset != "nsynth":
-        raise ValueError("This script currently supports nsynth-only as requested.")
-    data_dir = data_root / "nsynth"
-    classes = list(data_cfg.families)
+    if getattr(data_cfg, "prepare", False):
+        data_dir = prepare_dataset(
+            data_cfg.dataset,
+            root=data_root,
+            split=data_cfg.split,
+            families=list(getattr(data_cfg, "families", [])),
+            max_per_family=int(getattr(data_cfg, "max_per_family", 100)),
+            target_sr=int(cfg.aug.sample_rate),
+            # 기타 데이터셋별 인자 추가 가능
+        )
+    else:
+        data_dir = data_root / data_cfg.dataset.lower()
+    classes = list(getattr(data_cfg, "families", []))
 
     target_frames = int(getattr(cfg.aug, "target_frames", 0) or 0)
     train_transform = _build_mel(cfg.aug, True)
@@ -109,8 +126,11 @@ def main(cfg: DictConfig) -> None:
 
     num_classes = len(train_full.class_to_idx)
 
-    collate_train = (lambda b: collate_fixed_length(b, target_frames=target_frames, random_crop=True)) if target_frames > 0 else None
-    collate_val = (lambda b: collate_fixed_length(b, target_frames=target_frames, random_crop=False)) if target_frames > 0 else None
+    # collate_fn에 lambda를 사용하지 않고, partial을 이용해 target_frames 인자를 고정
+    from functools import partial
+    collate_train = partial(collate_train_fn, target_frames=target_frames) if target_frames > 0 else None
+    collate_val = partial(collate_val_fn, target_frames=target_frames) if target_frames > 0 else None
+    
     train_loader = DataLoader(train_ds, batch_size=cfg.train.batch_size, shuffle=True,
                               num_workers=cfg.train.num_workers, pin_memory=(device.type == "cuda"), collate_fn=collate_train)
     val_loader = DataLoader(val_ds, batch_size=cfg.train.batch_size, shuffle=False,
@@ -166,11 +186,12 @@ def main(cfg: DictConfig) -> None:
     mlcfg = cfg.train.logging.mlflow
     ml_enabled = bool(getattr(mlcfg, "enabled", False))
     if ml_enabled:
-        try:
-            orig_cwd = Path(hydra.utils.get_original_cwd())
-        except Exception:
-            orig_cwd = Path.cwd()
-        tracking_uri = str((orig_cwd / str(mlcfg.tracking_uri)).resolve())
+        # try:
+        #     orig_cwd = Path(hydra.utils.get_original_cwd())
+        # except Exception:
+        #     orig_cwd = Path.cwd()
+        #tracking_uri = str((orig_cwd / str(mlcfg.tracking_uri)).resolve())
+        tracking_uri = str(mlcfg.tracking_uri)
         mlflow.set_tracking_uri(tracking_uri)
         mlflow.set_experiment(str(mlcfg.experiment_name))
 
@@ -268,6 +289,15 @@ def main(cfg: DictConfig) -> None:
             es_min_delta=float(getattr(cfg.train.early_stopping, "min_delta", 0.0)),
         )
 
+        # Reparameterization (if enabled in model config)
+        mcfg = cfg.model
+        if hasattr(mcfg, "reparameterize") and bool(getattr(mcfg, "reparameterize", False)):
+            if hasattr(student, "reparameterize"):
+                print("[Model] Running reparameterization...")
+                student.reparameterize()
+                print("[Model] Reparameterization complete.")
+            else:
+                print("[Model] reparameterize() not implemented for this model.")
         if ml_enabled and Path(out_ckpt).exists():
             mlflow.log_artifact(out_ckpt, artifact_path="checkpoints")
     finally:

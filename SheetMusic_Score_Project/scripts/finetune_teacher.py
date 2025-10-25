@@ -26,6 +26,13 @@ from models import build_teacher_model
 from training.loops import fit
 from tools.profile_macs import profile_model
 
+try:
+    # Optional: NSynth subset creator (uses HF datasets)
+    from dataset_prepare.nsynth import prepare_nsynth_subset
+except Exception:
+    prepare_nsynth_subset = None  # type: ignore[assignment]
+
+from dataset_prepare import prepare_dataset
 
 def _resolve_device(name: str) -> torch.device:
     if name == "auto":
@@ -54,6 +61,11 @@ def _build_mel(aug_cfg, train_mode: bool):
         return ComposeMelAndAug(mel, spec)
     return mel
 
+# Collate functions are now defined at module level for multiprocessing compatibility
+def collate_train_fn(batch, target_frames):
+    return collate_fixed_length(batch, target_frames=target_frames, random_crop=True)
+def collate_val_fn(batch, target_frames):
+    return collate_fixed_length(batch, target_frames=target_frames, random_crop=False)
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
@@ -62,14 +74,32 @@ def main(cfg: DictConfig) -> None:
 
     torch.manual_seed(cfg.train.seed)
     device = _resolve_device(cfg.train.device)
+    print(f"[Device] Using: {device}")
 
-    # Data (NSynth-first)
+    # Data config (flat)
     data_cfg = cfg.data
-    if data_cfg.dataset != "nsynth":
-        raise ValueError("This script currently supports nsynth-only.")
     data_root = Path(data_cfg.root)
-    data_dir = data_root / "nsynth"
-    classes = list(data_cfg.families)
+
+    data_dir = None
+
+    if getattr(data_cfg, "prepare", False):
+        # Download or subset the dataset using the registered preparer
+        data_dir = prepare_dataset(
+            data_cfg.dataset,
+            root=data_root,
+            split=data_cfg.split,
+            families=list(getattr(data_cfg, "families", [])),
+            max_per_family=int(getattr(data_cfg, "max_per_family", 100)),
+            target_sr=int(cfg.aug.sample_rate),
+            # 기타 데이터셋별 인자 추가 가능
+        )
+    else:
+        # Use existing local folder structure
+        # 예: data/nsynth, data/tinysol 등
+        data_dir = data_root / data_cfg.dataset.lower()
+
+    # 이후 데이터셋 로딩
+    classes = list(getattr(data_cfg, "families", []))
 
     # Split indices (deterministic)
     base_ds = FolderAudioDataset(
@@ -98,8 +128,10 @@ def main(cfg: DictConfig) -> None:
 
     num_classes = len(train_full.class_to_idx)
     target_frames = int(getattr(cfg.aug, "target_frames", 0) or 0)
-    collate_train = (lambda b: collate_fixed_length(b, target_frames=target_frames, random_crop=True)) if target_frames > 0 else None
-    collate_val = (lambda b: collate_fixed_length(b, target_frames=target_frames, random_crop=False)) if target_frames > 0 else None
+
+    from functools import partial
+    collate_train = partial(collate_train_fn, target_frames=target_frames) if target_frames > 0 else None
+    collate_val = partial(collate_val_fn, target_frames=target_frames) if target_frames > 0 else None
 
     train_loader = DataLoader(train_ds, batch_size=cfg.train.batch_size, shuffle=True,
                               num_workers=cfg.train.num_workers, pin_memory=(device.type == "cuda"), collate_fn=collate_train)
@@ -124,11 +156,12 @@ def main(cfg: DictConfig) -> None:
     mlcfg = cfg.train.logging.mlflow
     ml_enabled = bool(getattr(mlcfg, "enabled", False))
     if ml_enabled:
-        try:
-            orig_cwd = Path(hydra.utils.get_original_cwd())
-        except Exception:
-            orig_cwd = Path.cwd()
-        tracking_uri = str((orig_cwd / str(mlcfg.tracking_uri)).resolve())
+        # try:
+        #     orig_cwd = Path(hydra.utils.get_original_cwd())
+        # except Exception:
+        #     orig_cwd = Path.cwd()
+        #tracking_uri = str((orig_cwd / str(mlcfg.tracking_uri)).resolve())
+        tracking_uri = str(mlcfg.tracking_uri)
         mlflow.set_tracking_uri(tracking_uri)
         mlflow.set_experiment("teacher-finetune")
 

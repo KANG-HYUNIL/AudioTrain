@@ -6,10 +6,10 @@
 #   python -m scripts.train_kd data=tinysol data.classes="[violin,flute,clarinet]"
 
 defaults:
-  - data: nsynth        # or tinysol
+  - data: musical_instrument_sound        # 
   - aug: mel_16k
   - model: student
   - train: base
   - _self_
 
-experiment_name: "FineTune_Teacher_Model_cnn_resnet18 on_NSynth"
+experiment_name: "FineTune_Teacher_Model_cnn_resnet18 on_Musical_Instruments_Sound_Dataset"

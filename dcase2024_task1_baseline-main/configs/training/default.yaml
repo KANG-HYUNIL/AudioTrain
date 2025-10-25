@@ -1,0 +1,9 @@
+n_epochs: 150
+batch_size: 256
+mixstyle_p: 0.4
+mixstyle_alpha: 0.3
+weight_decay: 0.0001
+roll_sec: 0.1
+lr: 0.005
+warmup_steps: 2000
+num_workers: 8

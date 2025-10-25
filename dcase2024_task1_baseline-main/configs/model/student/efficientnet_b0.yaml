@@ -1,0 +1,7 @@
+# EfficientNet-B0 (논문 student 예시)
+name: efficientnet_b0
+pretrained: true
+input_shape: [1, 128, 128]
+num_classes: 10
+ckpt_path: null
+notes: "논문 student baseline, torchvision EfficientNet-B0, KD 실험에 사용"

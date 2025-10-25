@@ -1,0 +1,10 @@
+
+defaults:
+  - general: default
+  - preprocessing: default
+  - training: default
+  - model: baseline
+  - repconv: default
+  - kd: default
+  - prune: default
+

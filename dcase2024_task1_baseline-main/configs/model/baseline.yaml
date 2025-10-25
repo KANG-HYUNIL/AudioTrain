@@ -1,0 +1,9 @@
+n_classes: 10
+in_channels: 1
+base_channels: 32
+channels_multiplier: 1.8
+expansion_rate: 2.1
+n_blocks: [3, 2, 1]
+strides: {b2: [1,1], b3: [1,2], b4: [2,1]}
+student_cfg: model/student/efficientnet_b0.yaml
+teacher_cfg: model/teacher/deit_base_patch16_224.yaml

@@ -10,7 +10,7 @@ applyTo: '**'
 이 실험은 https://arxiv.org/pdf/2410.20775?utm_source=chatgpt.com 다음 링크의 논문을 참조하여 이 논문에서 설명한 것들을 체험해보고 경험 연구 및 실습해보려는 목적이다. 논문 이름은 Data-Efficient Low-Complexity Acoustic Scene
 Classification via Distilling and Progressive Pruning
 
-데이터셋: 정상 링크/라이브러리로 내려받을 수 있어야 하며, 최초 다운로드 총량 ≤ 1GB를 우선한다. (필요시 부분 다운로드/부분 사용으로 제한)
+
 
 오디오 파이프라인: 입력은 wav/mp3 등 일반 오디오. torchaudio로 로드 → 리샘플/채널정규화 → MelSpectrogram/Log-Mel → 증강(RIR/코덱/노이즈·Time/Freq mask 등) → Tensor. 
 PyTorch Documentation

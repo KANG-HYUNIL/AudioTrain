@@ -1,0 +1,4 @@
+enable: false
+progressive: false
+steps: 3
+ratios: [0.3, 0.3, 0.3]
