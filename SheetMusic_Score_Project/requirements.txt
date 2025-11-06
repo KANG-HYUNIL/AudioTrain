@@ -1,14 +1,14 @@
 # Core DL
-torch>=2.2
-torchvision>=0.17
-torchaudio>=2.2
+# torch>=2.2
+# torchvision>=0.17
+# torchaudio>=2.2
 
 # Audio DSP
 librosa>=0.10
 soundfile>=0.12
 datasets>=2.18
 # Audio codecs & dependencies
-torchcodec>=0.1.0
+# torchcodec>=0.1.0
 
 # Config & Logging
 hydra-core>=1.3

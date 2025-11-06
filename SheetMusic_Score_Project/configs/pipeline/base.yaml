@@ -1,0 +1,52 @@
+# Inference-first audio-to-score pipeline configuration (Hydra group: pipeline)
+
+io:
+  input_path: ""            # set at runtime or via CLI
+  output_dir: ./outputs      # where MIDI/MusicXML/logs are written
+  sample_rate: 32000         # detector/loader default
+  device: auto               # auto | cpu | cuda
+
+logging:
+  mlflow:
+    enabled: true
+    experiment_name: audio2score
+    tracking_uri: file:./mlruns
+
+# Open pretrained audio taggers; choose one and a threshold
+# name: passt|ast|panns
+# classes: allowlist for reporting and instrument-to-track mapping
+# threshold: min probability for instrument to be considered present
+# NOTE: detection is optional; if disabled, separation/transcription still run
+
+detector:
+  enabled: true
+  name: passt
+  threshold: 0.40
+  classes: [piano, guitar, bass, drums, violin, flute, vocal]
+
+# Source separation backend. Demucs by default. Stems mapped to instrument groups.
+separator:
+  enabled: true
+  name: demucs
+  model: htdemucs
+  stem_map:
+    drums: drums
+    bass: bass
+    piano: piano
+    other: other
+
+# Transcription backend selection per instrument; fallback to default
+transcriber:
+  default: basic_pitch        # basic_pitch | onsets_frames | crepe_mono
+  per_instrument:
+    piano: basic_pitch
+    guitar: basic_pitch
+    bass: basic_pitch
+    drums: basic_pitch       # placeholder (drum transcription TBD)
+
+# Packaging/export
+export:
+  midi: true
+  musicxml: false            # requires music21
+  tempo_bpm: null            # when null, try to estimate later (P1)
+  quantize: null             # e.g., 1/16 later (P1)
