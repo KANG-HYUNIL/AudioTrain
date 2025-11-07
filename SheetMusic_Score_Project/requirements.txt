@@ -27,10 +27,18 @@ audiomentations>=0.37
 transformers>=4.44
 timm>=1.0.9
 
-# Separation (optional, choose one)
+# Separation (optional)
 spleeter>=2.4; platform_system != "Windows"  # Windows에서 이식성 이슈 가능
-# demucs는 설치 용량이 커질 수 있어 선택적으로
-# demucs>=4.0
+demucs>=4.0  # 사용 시 설치
+
+# Transcription
+basic-pitch>=0.2.0
+pretty_midi>=0.2.10
+torchcrepe>=0.0.23   # optional: for 'crepe_mono' backend
+piano_transcription_inference>=0.0.5  # optional: for 'onsets_frames' backend
+
+# MusicXML export (optional)
+music21>=9.1
 
 # Jupyter (optional)
 jupyterlab>=4.2

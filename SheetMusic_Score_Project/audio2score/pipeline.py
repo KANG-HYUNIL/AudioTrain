@@ -65,7 +65,29 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
         detected = {}
         if bool(getattr(pdet, "enabled", True)) and len(getattr(pdet, "classes", [])) > 0:
             t1 = time.time()
-            detected = detect_instruments(wav, sr, classes=list(pdet.classes), name=str(pdet.name), threshold=float(pdet.threshold))
+            # Prepare optional mel params from cfg.aug (if present)
+            mel_params = None
+            if hasattr(cfg, "aug"):
+                mel_params = {
+                    "sample_rate": int(getattr(cfg.aug, "sample_rate", sr)),
+                    "n_fft": int(getattr(cfg.aug, "n_fft", 1024)),
+                    "hop_length": int(getattr(cfg.aug, "hop_length", 160)),
+                    "n_mels": int(getattr(cfg.aug, "n_mels", 128)),
+                    "f_min": float(getattr(cfg.aug, "f_min", 20.0)),
+                    "f_max": float(getattr(cfg.aug, "f_max", sr/2)),
+                    "log_mel": bool(getattr(cfg.aug, "log_mel", True)),
+                    "normalize": bool(getattr(cfg.aug, "normalize", True)),
+                }
+            detected = detect_instruments(
+                wav,
+                sr,
+                classes=list(pdet.classes),
+                name=str(pdet.name),
+                threshold=float(pdet.threshold),
+                source=str(getattr(pdet, "source", "hub")),
+                checkpoint_path=getattr(pdet, "checkpoint_path", None),
+                mel_params=mel_params,
+            )
             stats["timings"]["detect_s"] = time.time() - t1
             stats["detected"] = detected
 
@@ -73,28 +95,49 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
         stems = {"mix": wav}
         if bool(getattr(psep, "enabled", True)):
             t2 = time.time()
-            stems = separate_demucs(input_audio, sample_rate=sr, model_name=str(psep.model))
+            stems = separate_demucs(
+                input_audio,
+                sample_rate=sr,
+                model_name=str(getattr(psep, "model", "htdemucs")),
+                source=str(getattr(psep, "source", "hub")),
+                checkpoint_path=getattr(psep, "checkpoint_path", None),
+            )
             stats["timings"]["separate_s"] = time.time() - t2
         stats["stems"] = list(stems.keys())
 
         # 4) Transcribe per stem
         t3 = time.time()
         tracks: Dict[str, MidiTrack] = {}
+
+        # Apply mapping from config (e.g., htdemucs: vocals/drums/bass/other)
+        stem_map = dict(getattr(psep, "stem_map", {}))
+        mapped_stems: Dict[str, torch.Tensor] = {}
+        name_count: Dict[str, int] = {}
+
         for stem_name, stem_wav in stems.items():
-            instr = stem_name  # simplistic mapping; refine later via cfg.pipeline.separator.stem_map
-            transcriber = pick_transcriber(instr, default=str(ptx.default))
-            # For P0: if transcriber expects file path, pass input_audio; if tensor, pass waveform
+            instr = stem_map.get(stem_name, stem_name)
+            key = instr
+            if key in mapped_stems:
+                idx = name_count.get(instr, 1) + 1
+                name_count[instr] = idx
+                key = f"{instr}_{idx}"
+            else:
+                name_count[instr] = 1
+            mapped_stems[key] = stem_wav
+
+        for instr, stem_wav in mapped_stems.items():
+            backend = str(getattr(ptx, "per_instrument", {}).get(instr, ptx.default))
+            transcriber = pick_transcriber(instr, default=backend)
             try:
-                if transcriber.__name__ == "transcribe_basic_pitch":
-                    track = transcriber(input_audio)  # type: ignore[arg-type]
-                else:
-                    track = transcriber(stem_wav, sr)  # type: ignore[misc]
+                track = transcriber(stem_wav, sr)  # unified (waveform, sr) interface
             except Exception:
-                # Fallback empty track
                 from .transcription import MidiTrack as _MidiTrack
                 track = _MidiTrack(instrument=instr, notes=[])
+
             tracks[instr] = track
         stats["timings"]["transcribe_s"] = time.time() - t3
+        # Basic metric: total note count across tracks
+        stats["note_count"] = int(sum(len(t.notes) for t in tracks.values()))
 
         # 5) Package
         t4 = time.time()
@@ -121,6 +164,7 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
             if detected:
                 mlflow.log_dict(detected, "detected.json")
             mlflow.log_metrics({k: float(v) for k, v in stats["timings"].items()})
+            mlflow.log_metrics({"note_count": float(stats.get("note_count", 0))})
             for name, path in artifacts.items():
                 mlflow.log_artifact(path, artifact_path="artifacts")
 

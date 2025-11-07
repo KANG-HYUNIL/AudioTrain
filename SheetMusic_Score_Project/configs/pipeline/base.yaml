@@ -3,7 +3,7 @@
 io:
   input_path: ""            # set at runtime or via CLI
   output_dir: ./outputs      # where MIDI/MusicXML/logs are written
-  sample_rate: 32000         # detector/loader default
+  sample_rate: 32000         # detector/loader default (detector may resample internally)
   device: auto               # auto | cpu | cuda
 
 logging:
@@ -22,7 +22,9 @@ detector:
   enabled: true
   name: passt
   threshold: 0.40
-  classes: [piano, guitar, bass, drums, violin, flute, vocal]
+  classes: [piano, guitar, bass, drums, vocals]
+  source: hub              # hub | local
+  checkpoint_path: null    # when source=local, provide a local checkpoint path
 
 # Source separation backend. Demucs by default. Stems mapped to instrument groups.
 separator:
@@ -32,17 +34,23 @@ separator:
   stem_map:
     drums: drums
     bass: bass
+    vocals: vocals
     piano: piano
+    guitar: guitar
     other: other
+  source: hub              # hub | local
+  checkpoint_path: null    # when source=local, provide a local checkpoint path
 
 # Transcription backend selection per instrument; fallback to default
 transcriber:
   default: basic_pitch        # basic_pitch | onsets_frames | crepe_mono
   per_instrument:
-    piano: basic_pitch
+    piano: onsets_frames
     guitar: basic_pitch
     bass: basic_pitch
-    drums: basic_pitch       # placeholder (drum transcription TBD)
+    drums: crepe_mono       # placeholder (drum transcription TBD)
+    vocals: basic_pitch
+
 
 # Packaging/export
 export:

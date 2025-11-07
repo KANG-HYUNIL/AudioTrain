@@ -37,6 +37,7 @@ def load_audio(path: str | Path, target_sr: int = 16000, mono: bool = True) -> T
     """
     if torchaudio is None:
         raise RuntimeError("torchaudio is required to load audio. Install torchaudio/FFmpeg.")
+    
     waveform, sr = torchaudio.load(str(path))
     waveform = waveform.to(torch.float32)
     # Peak-normalize to [-1, 1]

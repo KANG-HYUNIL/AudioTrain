@@ -1,47 +1,75 @@
-"""Instrument detection (tagging) wrappers.
+"""Instrument detection (tagging) wrappers with a registry-based backend system.
 
-This module provides a thin abstraction over open pretrained audio tagging models
-(e.g., PaSST/AST/PANNs). For P0, implementations can be stubbed or progressively
-added. The interface is detection-model agnostic.
+This module abstracts open pretrained audio tagging models (PaSST/AST/PANNs).
+For P0, we register stub backends; real integrations can replace them later
+without changing the pipeline code.
 """
 from __future__ import annotations
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional
+from dataclasses import dataclass
 
 import torch
+from .utils import Registry
 
-
+@dataclass
 class DetectionConfig:
-    """Lightweight detection config.
+    """Configuration for a detection backend.
 
     Attributes:
-        name: Model backend name (e.g., 'passt', 'ast', 'panns').
+        name: Backend name (e.g., 'passt', 'ast', 'panns').
         classes: List of instrument labels to report.
         threshold: Score threshold for positive detection.
+        source: 'hub' or 'local' to load weights.
+        checkpoint_path: Local checkpoint path when source='local'.
+        mel_params: Optional dict of Log-Mel parameters for backends that need it.
     """
 
-    def __init__(self, name: str, classes: List[str], threshold: float = 0.4) -> None:
-        self.name = name
-        self.classes = classes
-        self.threshold = float(threshold)
+    name: str
+    classes: List[str]
+    threshold: float = 0.4
+    source: str = "hub"
+    checkpoint_path: Optional[str] = None
+    mel_params: Optional[Dict] = None
 
 
-def build_detector(name: str = "passt"):
-    """Build a detector callable given a backend name.
+# Global registry for detector backends
+DETECTOR_REGISTRY = Registry("detector")
 
-    Returns:
-        A callable like detect(waveform: Tensor, sr: int, cfg: DetectionConfig) -> Dict[str, float]
+
+@DETECTOR_REGISTRY.register("stub")
+def build_stub_detector():
+    """Return a simple detector callable that outputs zeros for requested classes.
+
+    Use this as a placeholder until a real backend is integrated.
     """
 
-    def _stub_detect(waveform: torch.Tensor, sr: int, cfg: DetectionConfig) -> Dict[str, float]:
-        """Stub detector: returns empty or uniform low scores.
-
-        Replace with real model integration (PaSST/AST/PANNs) in subsequent steps.
-        """
+    def _detect(waveform: torch.Tensor, sr: int, cfg: DetectionConfig) -> Dict[str, float]:
         _ = (waveform, sr)
         return {label: 0.0 for label in cfg.classes}
 
-    # Future: route to concrete backend loaders
-    return _stub_detect
+    return _detect
+
+
+# Aliases to stub for now; replace with real integrations later.
+@DETECTOR_REGISTRY.register("passt")
+def build_passt_detector():
+    return build_stub_detector()
+
+
+@DETECTOR_REGISTRY.register("ast")
+def build_ast_detector():
+    return build_stub_detector()
+
+
+@DETECTOR_REGISTRY.register("panns")
+def build_panns_detector():
+    return build_stub_detector()
+
+
+def build_detector(name: str = "passt"):
+    """Build a detector callable from registry by backend name."""
+    factory = DETECTOR_REGISTRY.get(name)
+    return factory()
 
 
 def detect_instruments(
@@ -50,6 +78,9 @@ def detect_instruments(
     classes: List[str],
     name: str = "passt",
     threshold: float = 0.4,
+    source: str = "hub",
+    checkpoint_path: Optional[str] = None,
+    mel_params: Optional[Dict] = None,
 ) -> Dict[str, float]:
     """Run instrument detection.
 
@@ -59,12 +90,22 @@ def detect_instruments(
         classes: Instrument labels to report.
         name: Backend name.
         threshold: Threshold for filtering (returned scores unaffected; filtering is caller's choice).
+        source: Where to load weights ('hub' or 'local').
+        checkpoint_path: Local checkpoint path when source='local'.
+        mel_params: Optional dict of Log-Mel params (n_fft, hop_length, n_mels, ...).
 
     Returns:
         Dict mapping instrument -> score (0..1). Caller can filter by threshold.
     """
-    cfg = DetectionConfig(name=name, classes=classes, threshold=threshold)
-    detector = build_detector(name)
+    cfg = DetectionConfig(
+        name=name,
+        classes=classes,
+        threshold=threshold,
+        source=source,
+        checkpoint_path=checkpoint_path,
+        mel_params=mel_params,
+    )
+    detector = build_detector(name=name)
     scores = detector(waveform, sr, cfg)
     # Ensure all requested classes exist
     for label in classes:
