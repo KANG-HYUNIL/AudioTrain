@@ -1,7 +1,7 @@
 # Inference-first audio-to-score pipeline configuration (Hydra group: pipeline)
 
 io:
-  input_path: ""            # set at runtime or via CLI
+  input_path: ./inputs/sample.wav  # default demo input (place your audio files in ./inputs/)
   output_dir: ./outputs      # where MIDI/MusicXML/logs are written
   sample_rate: 32000         # detector/loader default (detector may resample internally)
   device: auto               # auto | cpu | cuda
@@ -29,7 +29,7 @@ detector:
 # Source separation backend. Demucs by default. Stems mapped to instrument groups.
 separator:
   enabled: true
-  name: demucs
+  name: demucs            
   model: htdemucs
   stem_map:
     drums: drums
@@ -55,6 +55,7 @@ transcriber:
 # Packaging/export
 export:
   midi: true
-  musicxml: false            # requires music21
+  musicxml: true            # requires music21
   tempo_bpm: null            # when null, try to estimate later (P1)
   quantize: null             # e.g., 1/16 later (P1)
+  time_signature: "4/4"      # default time signature; can be overridden

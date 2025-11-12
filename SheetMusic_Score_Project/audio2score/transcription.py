@@ -114,6 +114,17 @@ def transcribe_basic_pitch_tensor(waveform: torch.Tensor, sr: int, instrument: s
     bp_predict = _get_basic_pitch_predict()
 
     wav = _to_mono_tensor(waveform)
+    # Basic Pitch commonly operates at ~22.05 kHz. Resample for stability.
+    target_sr = 22050
+    if int(sr) != target_sr:
+        try:
+            ta = importlib.import_module("torchaudio")
+            wav = ta.functional.resample(wav.unsqueeze(0), int(sr), target_sr).squeeze(0)
+        except Exception:
+            lb = importlib.import_module("librosa")
+            wav_np = lb.resample(wav.numpy(), orig_sr=int(sr), target_sr=target_sr)
+            wav = torch.from_numpy(wav_np.astype(np.float32))
+        sr = target_sr
     # Convert to numpy array for Basic Pitch
     audio_np = wav.numpy()
 

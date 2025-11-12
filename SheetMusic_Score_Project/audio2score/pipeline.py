@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Dict, Any, Tuple
 from pathlib import Path
 import time
+import importlib
 
 import torch
 
@@ -139,9 +140,31 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
         # Basic metric: total note count across tracks
         stats["note_count"] = int(sum(len(t.notes) for t in tracks.values()))
 
-        # 5) Package
+        # 5) Tempo estimation (if not provided) before packaging
+        tempo_cfg = getattr(cfg.pipeline.export, "tempo_bpm", None)
+        tempo_bpm = None
+        if tempo_cfg is not None:
+            tempo_bpm = float(tempo_cfg)
+        else:
+            # Estimate tempo using librosa if available
+            try:
+                lb = importlib.import_module("librosa")
+                # Downsample for speed if very long; use a small slice if > 120s
+                wav_np = wav.detach().cpu().numpy()
+                max_samples = int(sr * 120)
+                if wav_np.shape[-1] > max_samples:
+                    wav_np = wav_np[:max_samples]
+                onset_env = lb.onset.onset_strength(y=wav_np, sr=sr)
+                tempo_bpm = float(lb.beat.tempo(onset_envelope=onset_env, sr=sr, aggregate=None).mean())
+            except Exception:
+                tempo_bpm = None
+        stats["estimated_tempo_bpm"] = tempo_bpm if tempo_bpm is not None else "unknown"
+
+        # 6) Package
         t4 = time.time()
-        bundle = merge_tracks(tracks, tempo_bpm=getattr(cfg.pipeline.export, "tempo_bpm", None), metadata={"detected": detected})
+        # Pass time signature if configured (e.g., "4/4")
+        time_sig = getattr(cfg.pipeline.export, "time_signature", None)
+        bundle = merge_tracks(tracks, tempo_bpm=tempo_bpm, metadata={"detected": detected}, time_signature=time_sig)
         out_dir = Path(pio.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         midi_path = out_dir / (Path(input_audio).stem + ".mid")
