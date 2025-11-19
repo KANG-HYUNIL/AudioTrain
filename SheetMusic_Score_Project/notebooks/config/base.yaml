@@ -1,0 +1,5 @@
+# Colab demo base.yaml (standalone from pipeline Hydra config)
+# Defines root folders; entrypoint resolves relative input paths.
+paths:
+  input_root: /content/data/audio_in
+  output_root: /content/data/audio_out

@@ -1,0 +1,61 @@
+# Inference-first audio-to-score pipeline configuration (Hydra group: pipeline)
+
+io:
+  input_path: ./inputs/sample.wav  # default demo input (place your audio files in ./inputs/)
+  output_dir: ./outputs      # where MIDI/MusicXML/logs are written
+  sample_rate: 32000         # detector/loader default (detector may resample internally)
+  device: auto               # auto | cpu | cuda
+
+logging:
+  mlflow:
+    enabled: true
+    experiment_name: audio2score
+    tracking_uri: file:./mlruns
+
+# Open pretrained audio taggers; choose one and a threshold
+# name: passt|ast|panns
+# classes: allowlist for reporting and instrument-to-track mapping
+# threshold: min probability for instrument to be considered present
+# NOTE: detection is optional; if disabled, separation/transcription still run
+
+detector:
+  enabled: true
+  name: passt
+  threshold: 0.40
+  classes: [piano, guitar, bass, drums, vocals]
+  source: hub              # hub | local
+  checkpoint_path: null    # when source=local, provide a local checkpoint path
+
+# Source separation backend. Demucs by default. Stems mapped to instrument groups.
+separator:
+  enabled: true
+  name: demucs            
+  model: htdemucs
+  stem_map:
+    drums: drums
+    bass: bass
+    vocals: vocals
+    piano: piano
+    guitar: guitar
+    other: other
+  source: hub              # hub | local
+  checkpoint_path: null    # when source=local, provide a local checkpoint path
+
+# Transcription backend selection per instrument; fallback to default
+transcriber:
+  default: basic_pitch        # basic_pitch | onsets_frames | crepe_mono
+  per_instrument:
+    piano: onsets_frames
+    guitar: basic_pitch
+    bass: basic_pitch
+    drums: crepe_mono       # placeholder (drum transcription TBD)
+    vocals: basic_pitch
+
+
+# Packaging/export
+export:
+  midi: true
+  musicxml: true            # requires music21
+  tempo_bpm: null            # when null, try to estimate later (P1)
+  quantize: null             # e.g., 1/16 later (P1)
+  time_signature: "4/4"      # default time signature; can be overridden

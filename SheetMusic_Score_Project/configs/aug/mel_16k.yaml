@@ -1,25 +1,23 @@
+# Log-Mel parameters for detector/feature extraction (16 kHz)
+# These fields align with existing mel pipeline usage in the repo.
 
-
-
-
-enable: true
 sample_rate: 16000
-n_mels: 128
 n_fft: 1024
-hop_length: 256
-f_min: 20.0
-f_max: 8000.0
-log_mel: true
-normalize: true
+hop_length: 160          # 10 ms @16k
+n_mels: 128
+f_min: 20
+f_max: 8000
+log_mel: true            # apply log-amplitude to mel spectrogram
+normalize: true          # per-example standardization (pipeline-dependent)
 
-# Target number of frames on the time axis after collate crop/pad.
-# For 16 kHz audio with hop_length=256, ~62.5 fps → 512 frames ≈ 8.2 s
-target_frames: 1024
-
+# For training scenarios (kept for compatibility; disabled by default in inference)
 specaug:
-  enable: true       # wired later in dataloaders/augment.py
+  enable: false
   time_mask: 2
   freq_mask: 2
-  # mask size as percentage of axis lengths
   time_mask_pct: 0.10
   freq_mask_pct: 0.15
+
+# Optional: crop/pad to fixed number of frames; 0 disables
+# Not used by the new inference pipeline but retained for compatibility
+target_frames: 0
