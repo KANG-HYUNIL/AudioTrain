@@ -11,7 +11,11 @@ from dataclasses import dataclass
 import torch
 import importlib
 import warnings
+import logging
+import time
 from .utils import Registry
+
+log = logging.getLogger(__name__)
 
 @dataclass
 class DetectionConfig:
@@ -75,6 +79,7 @@ def _load_passt(model_id: str = "Jing-Ma/passt-s-f128-p16-s10-ap476"):
         processor = transformers.AutoProcessor.from_pretrained(model_id)
         model = transformers.AutoModelForAudioClassification.from_pretrained(model_id)
         model.eval()
+        log.info(f"Loaded PaSST model: {model_id}")
     except Exception as e:  # pragma: no cover
         raise RuntimeError(f"Failed to load PaSST model '{model_id}': {e}") from e
     _PASST_CACHE[model_id] = model
@@ -108,11 +113,13 @@ def build_passt_detector():
     """Return a detector callable using PaSST (Hugging Face)."""
 
     def _detect(waveform: torch.Tensor, sr: int, cfg: DetectionConfig) -> Dict[str, float]:
+        t_start = time.time()
         try:
             model, processor = _load_passt()
         except Exception as e:
             warnings.warn(str(e))
             return {label: 0.0 for label in cfg.classes}
+        t_load = time.time()
 
         # Ensure mono float tensor
         wav = waveform.detach().cpu().float()
@@ -126,6 +133,9 @@ def build_passt_detector():
             out = model(**inputs)
             logits = out.logits.squeeze(0)
         probs = torch.sigmoid(logits).detach().cpu().numpy()
+        t_infer = time.time()
+
+        log.debug(f"[PaSST] Model load: {t_load - t_start:.3f}s, Inference: {t_infer - t_load:.3f}s")
 
         # HuggingFace audio classification models expose an id2label dict or list.
         raw_id2label = getattr(model.config, "id2label", None)
@@ -145,6 +155,7 @@ def build_passt_detector():
             matched = [p for lab, p in label_scores.items() if any(sub in lab for sub in substrings)]
             score = float(max(matched) if matched else 0.0)
             results[user_label] = score
+            log.debug(f"Detection score for {user_label}: {score:.4f}")
         # Optionally apply threshold filtering (still return full dict for caller)
         return results
 
@@ -192,6 +203,9 @@ def detect_instruments(
     Returns:
         Dict mapping instrument -> score (0..1). Caller can filter by threshold.
     """
+    t0 = time.time()
+    log.info(f"[Detection] Starting instrument detection with backend '{name}' for classes: {classes}")
+
     cfg = DetectionConfig(
         name=name,
         classes=classes,
@@ -208,4 +222,7 @@ def detect_instruments(
     # Optionally, callers may want filtered positives; we keep full scores for now
     # but clamp to [0,1] and sanity-check types
     scores = {k: float(max(0.0, min(1.0, float(v)))) for k, v in scores.items()}
+    
+    duration = time.time() - t0
+    log.info(f"[Detection] Finished in {duration:.2f}s. Scores: {scores}")
     return scores

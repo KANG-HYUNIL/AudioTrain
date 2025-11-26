@@ -13,6 +13,10 @@ from .utils import Registry
 import sys
 import subprocess
 import tempfile
+import logging
+import time
+
+log = logging.getLogger(__name__)
 
 try:
     import torchaudio
@@ -83,12 +87,15 @@ def build_demucs():
             "-o", str(out_dir),
             str(input_wav),
         ]
+        log.info(f"Running Demucs CLI: {' '.join(cmd)}")
         # TODO: add checkpoint flag when required by a specific demucs version
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if proc.returncode != 0:
+            log.error(f"Demucs CLI failed. STDERR: {proc.stderr}")
             raise RuntimeError(
                 f"Demucs CLI failed ({proc.returncode}).\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}"
             )
+        log.debug(f"Demucs CLI output: {proc.stdout}")
 
     def _collect_stems(out_dir: Path, model_name: str, input_base: str) -> Dict[str, Path]:
         # Typical output: {out_dir}/{model_name}/{input_base}/*.wav
@@ -129,15 +136,23 @@ def build_demucs():
             # Run Demucs
             out_dir = tdir / "out"
             out_dir.mkdir(parents=True, exist_ok=True)
+            
+            t_cli_start = time.time()
             _run_cli(input_wav, cfg.model_name, device, out_dir, cfg.checkpoint_path)
+            t_cli_end = time.time()
 
             # Collect and load stems
             stem_paths = _collect_stems(out_dir, cfg.model_name, input_base)
             if not stem_paths:
                 return {}
+            
+            t_load_start = time.time()
             stems: Dict[str, torch.Tensor] = {
                 stem: _load_and_standardize(p, cfg.sample_rate) for stem, p in stem_paths.items()
             }
+            t_load_end = time.time()
+            
+            log.debug(f"[Demucs] CLI run: {t_cli_end - t_cli_start:.2f}s, Stem loading: {t_load_end - t_load_start:.2f}s")
             return stems
 
     return _separate
@@ -176,6 +191,9 @@ def separate_demucs(
     This wrapper preserves the previous function name/signature (with added
     source/checkpoint options) to minimize pipeline changes.
     """
+    t0 = time.time()
+    log.info(f"[Separation] Starting separation with model '{model_name}'")
+
     sep = build_separator(name="demucs")
     cfg = SeparationConfig(
         name="demucs",
@@ -184,7 +202,11 @@ def separate_demucs(
         checkpoint_path=checkpoint_path,
         sample_rate=sample_rate,
     )
-    return sep(input_audio, cfg)
+    stems = sep(input_audio, cfg)
+    
+    duration = time.time() - t0
+    log.info(f"[Separation] Finished in {duration:.2f}s. Stems found: {list(stems.keys())}")
+    return stems
 
 
 def map_stems_to_instruments(stems: Dict[str, torch.Tensor]) -> Dict[str, str]:

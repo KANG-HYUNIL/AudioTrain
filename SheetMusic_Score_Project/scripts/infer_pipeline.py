@@ -9,14 +9,17 @@ from __future__ import annotations
 
 from omegaconf import DictConfig, OmegaConf
 import hydra
+import logging
 
 from audio2score.pipeline import run_pipeline
+
+log = logging.getLogger(__name__)
 
 
 @hydra.main(version_base="1.3", config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
-    print("==== Composed Config ====")
-    print(OmegaConf.to_yaml(cfg))
+    log.info("==== Composed Config ====")
+    log.info(OmegaConf.to_yaml(cfg))
 
     # Expect new group cfg.pipeline (see configs/pipeline/base.yaml)
     input_path = str(cfg.pipeline.io.input_path)
@@ -24,8 +27,8 @@ def main(cfg: DictConfig) -> None:
         raise SystemExit("Set pipeline.io.input_path=<audio file> via CLI or config.")
 
     artifacts, stats = run_pipeline(input_path, cfg)
-    print("Artifacts:", artifacts)
-    print("Stats:", stats)
+    log.info(f"Artifacts: {artifacts}")
+    log.info(f"Stats: {stats}")
 
 
 if __name__ == "__main__":

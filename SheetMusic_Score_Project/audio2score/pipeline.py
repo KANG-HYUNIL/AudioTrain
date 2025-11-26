@@ -8,10 +8,13 @@ from typing import Dict, Any, Tuple
 from pathlib import Path
 import time
 import importlib
+import logging
 
 import torch
 
 from .audio_io import load_audio
+
+log = logging.getLogger(__name__)
 from .detection import detect_instruments
 from .separation import separate_demucs, map_stems_to_instruments
 from .transcription import pick_transcriber, MidiTrack
@@ -56,15 +59,29 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
 
     try:
         # 1) Load
+        log.info("=" * 60)
+        log.info("[Stage 1/6] Loading Audio")
+        log.info("=" * 60)
+        log.info(f"Input file: {input_audio}")
         t0 = time.time()
         wav, sr = load_audio(input_audio, target_sr=int(pio.sample_rate), mono=True)
-        stats["timings"]["load_s"] = time.time() - t0
+        load_duration = time.time() - t0
+        stats["timings"]["load_s"] = load_duration
         stats["sr"] = sr
         stats["num_samples"] = int(wav.shape[-1])
+        log.info(f"Audio loaded successfully.")
+        log.info(f"  - Sample Rate: {sr} Hz")
+        log.info(f"  - Samples: {stats['num_samples']}")
+        log.info(f"  - Duration: {stats['num_samples']/sr:.2f} seconds")
+        log.info(f"  - Load Time: {load_duration:.4f}s")
 
         # 2) Detect (optional)
+        log.info("=" * 60)
+        log.info("[Stage 2/6] Instrument Detection")
+        log.info("=" * 60)
         detected = {}
         if bool(getattr(pdet, "enabled", True)) and len(getattr(pdet, "classes", [])) > 0:
+            log.info(f"Detector: {pdet.name} (Threshold: {pdet.threshold})")
             t1 = time.time()
             # Prepare optional mel params from cfg.aug (if present)
             mel_params = None
@@ -89,24 +106,43 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
                 checkpoint_path=getattr(pdet, "checkpoint_path", None),
                 mel_params=mel_params,
             )
-            stats["timings"]["detect_s"] = time.time() - t1
+            detect_duration = time.time() - t1
+            stats["timings"]["detect_s"] = detect_duration
             stats["detected"] = detected
+            log.info(f"Detection Results: {detected}")
+            log.info(f"  - Detection Time: {detect_duration:.4f}s")
+        else:
+            log.info("Instrument detection skipped (disabled in config).")
 
         # 3) Separate (optional)
+        log.info("=" * 60)
+        log.info("[Stage 3/6] Source Separation")
+        log.info("=" * 60)
         stems = {"mix": wav}
         if bool(getattr(psep, "enabled", True)):
+            model_name = str(getattr(psep, "model", "htdemucs"))
+            log.info(f"Separator Model: {model_name}")
             t2 = time.time()
             stems = separate_demucs(
                 input_audio,
                 sample_rate=sr,
-                model_name=str(getattr(psep, "model", "htdemucs")),
+                model_name=model_name,
                 source=str(getattr(psep, "source", "hub")),
                 checkpoint_path=getattr(psep, "checkpoint_path", None),
             )
-            stats["timings"]["separate_s"] = time.time() - t2
+            sep_duration = time.time() - t2
+            stats["timings"]["separate_s"] = sep_duration
+            log.info(f"Separation complete.")
+            log.info(f"  - Stems Created: {list(stems.keys())}")
+            log.info(f"  - Separation Time: {sep_duration:.4f}s")
+        else:
+            log.info("Source separation skipped (disabled in config).")
         stats["stems"] = list(stems.keys())
 
         # 4) Transcribe per stem
+        log.info("=" * 60)
+        log.info("[Stage 4/6] Transcription")
+        log.info("=" * 60)
         t3 = time.time()
         tracks: Dict[str, MidiTrack] = {}
 
@@ -128,25 +164,43 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
 
         for instr, stem_wav in mapped_stems.items():
             backend = str(getattr(ptx, "per_instrument", {}).get(instr, ptx.default))
+            log.info(f"Processing Instrument: {instr}")
+            log.info(f"  - Backend: {backend}")
+            
+            instr_t0 = time.time()
             transcriber = pick_transcriber(instr, default=backend)
             try:
                 track = transcriber(stem_wav, sr)  # unified (waveform, sr) interface
-            except Exception:
+                instr_duration = time.time() - instr_t0
+                log.info(f"  - Notes Found: {len(track.notes)}")
+                log.info(f"  - Time: {instr_duration:.4f}s")
+            except Exception as e:
+                log.warning(f"  - Transcription failed for {instr}: {e}. Using empty track.")
                 from .transcription import MidiTrack as _MidiTrack
                 track = _MidiTrack(instrument=instr, notes=[])
 
             tracks[instr] = track
-        stats["timings"]["transcribe_s"] = time.time() - t3
+        
+        transcribe_duration = time.time() - t3
+        stats["timings"]["transcribe_s"] = transcribe_duration
         # Basic metric: total note count across tracks
         stats["note_count"] = int(sum(len(t.notes) for t in tracks.values()))
+        log.info(f"Transcription Stage Complete.")
+        log.info(f"  - Total Notes: {stats['note_count']}")
+        log.info(f"  - Total Transcription Time: {transcribe_duration:.4f}s")
 
         # 5) Tempo estimation (if not provided) before packaging
+        log.info("=" * 60)
+        log.info("[Stage 5/6] Tempo Estimation")
+        log.info("=" * 60)
         tempo_cfg = getattr(cfg.pipeline.export, "tempo_bpm", None)
         tempo_bpm = None
         if tempo_cfg is not None:
             tempo_bpm = float(tempo_cfg)
+            log.info(f"Using configured tempo: {tempo_bpm} BPM")
         else:
-            # Estimate tempo using librosa if available
+            log.info("Estimating tempo from audio...")
+            t_tempo = time.time()
             try:
                 lb = importlib.import_module("librosa")
                 # Downsample for speed if very long; use a small slice if > 120s
@@ -156,11 +210,17 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
                     wav_np = wav_np[:max_samples]
                 onset_env = lb.onset.onset_strength(y=wav_np, sr=sr)
                 tempo_bpm = float(lb.beat.tempo(onset_envelope=onset_env, sr=sr, aggregate=None).mean())
-            except Exception:
+                log.info(f"  - Estimated Tempo: {tempo_bpm:.2f} BPM")
+                log.info(f"  - Estimation Time: {time.time() - t_tempo:.4f}s")
+            except Exception as e:
+                log.warning(f"Tempo estimation failed: {e}")
                 tempo_bpm = None
         stats["estimated_tempo_bpm"] = tempo_bpm if tempo_bpm is not None else "unknown"
 
         # 6) Package
+        log.info("=" * 60)
+        log.info("[Stage 6/6] Packaging & Export")
+        log.info("=" * 60)
         t4 = time.time()
         # Pass time signature if configured (e.g., "4/4")
         time_sig = getattr(cfg.pipeline.export, "time_signature", None)
@@ -169,12 +229,24 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
         out_dir.mkdir(parents=True, exist_ok=True)
         midi_path = out_dir / (Path(input_audio).stem + ".mid")
         artifacts["midi"] = export_midi(bundle, midi_path)
+        log.info(f"Exported MIDI: {midi_path}")
         if bool(getattr(pexp, "musicxml", False)):
             xml_path = out_dir / (Path(input_audio).stem + ".musicxml")
             artifacts["musicxml"] = export_musicxml(bundle, xml_path)
-        stats["timings"]["package_s"] = time.time() - t4
+            log.info(f"Exported MusicXML: {xml_path}")
+        
+        package_duration = time.time() - t4
+        stats["timings"]["package_s"] = package_duration
+        log.info(f"Packaging Time: {package_duration:.4f}s")
 
-        stats["timings"]["total_s"] = time.time() - start_all
+        total_duration = time.time() - start_all
+        stats["timings"]["total_s"] = total_duration
+        
+        log.info("=" * 60)
+        log.info("PIPELINE COMPLETED SUCCESSFULLY")
+        log.info("=" * 60)
+        log.info(f"Total Execution Time: {total_duration:.2f}s")
+        log.info("=" * 60)
 
         # MLflow logging
         if ml_ctx is not None and mlflow is not None:

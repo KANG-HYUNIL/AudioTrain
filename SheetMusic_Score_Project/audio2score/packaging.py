@@ -10,7 +10,10 @@ from pathlib import Path
 from .transcription import MidiBundle, MidiTrack
 import importlib
 import numpy as np
+import logging
+import time
 
+log = logging.getLogger(__name__)
 
 def _gm_program_for(instrument: str) -> int:
     """Return a General MIDI program index (0-127) for a given instrument label.
@@ -107,12 +110,15 @@ def export_midi(bundle: MidiBundle, output_path: str | Path) -> str:
 
     Falls back to creating a placeholder file if pretty_midi is not installed.
     """
+    t0 = time.time()
+    log.info(f"[Packaging] Starting MIDI export to {output_path}")
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         pm = importlib.import_module("pretty_midi")
     except Exception:
+        log.warning("pretty_midi not installed. Creating placeholder MIDI file.")
         out.write_bytes(b"Placeholder MIDI content. Install pretty_midi for real export.")
         return str(out)
 
@@ -137,6 +143,7 @@ def export_midi(bundle: MidiBundle, output_path: str | Path) -> str:
         is_drum = "drum" in name.lower()
         program = 0 if is_drum else _gm_program_for(name)
         inst = pm.Instrument(program=program, is_drum=is_drum, name=name)
+        log.debug(f"Adding MIDI track: {name} (program={program}, notes={len(track.notes)})")
         for onset, offset, pitch, velocity in track.notes:
             onset_s = max(0.0, float(onset))
             offset_s = max(onset_s + 1e-3, float(offset))
@@ -145,6 +152,9 @@ def export_midi(bundle: MidiBundle, output_path: str | Path) -> str:
             inst.notes.append(note)
         midi.instruments.append(inst)
     midi.write(str(out))
+    
+    duration = time.time() - t0
+    log.info(f"[Packaging] MIDI export finished in {duration:.2f}s")
     return str(out)
 
 
@@ -156,11 +166,14 @@ def export_musicxml(bundle: MidiBundle, output_path: str | Path) -> str:
     provided via bundle. Note durations are expressed in quarterLength using the
     default 4/4 assumptions.
     """
+    t0 = time.time()
+    log.info(f"[Packaging] Starting MusicXML export to {output_path}")
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
         m21 = importlib.import_module("music21")
     except Exception:
+        log.warning("music21 not installed. Creating placeholder MusicXML file.")
         out.write_text("<!-- Placeholder MusicXML. Install music21 for real export. -->\n")
         return str(out)
 
@@ -211,4 +224,7 @@ def export_musicxml(bundle: MidiBundle, output_path: str | Path) -> str:
         score.append(part)
 
     score.write('musicxml', fp=str(out))
+    
+    duration = time.time() - t0
+    log.info(f"[Packaging] MusicXML export finished in {duration:.2f}s")
     return str(out)

@@ -12,9 +12,12 @@ import torch
 import math
 import importlib
 import numpy as np
+import logging
+import time
 
 from .utils import Registry
 
+log = logging.getLogger(__name__)
 
 class MidiTrack:
     """Lightweight MIDI track placeholder.
@@ -110,6 +113,9 @@ def transcribe_basic_pitch_tensor(waveform: torch.Tensor, sr: int, instrument: s
     Returns:
         MidiTrack with note events derived from Basic Pitch predictions.
     """
+    t0 = time.time()
+    log.debug(f"[BasicPitch] Starting transcription for {instrument}")
+
     # Lazy-import to avoid static import errors when the package isn't installed
     bp_predict = _get_basic_pitch_predict()
 
@@ -130,12 +136,16 @@ def transcribe_basic_pitch_tensor(waveform: torch.Tensor, sr: int, instrument: s
 
     # Run prediction
     try:
+        log.debug(f"Running Basic Pitch prediction for {instrument}...")
         model_output, midi_data, note_events = bp_predict(audio_np, sr)  # type: ignore[misc]
     except TypeError:
         # Some versions might expect keyword args
         model_output, midi_data, note_events = bp_predict(audio_np, sample_rate=sr)  # type: ignore[misc]
 
     notes = _bp_note_events_to_list(note_events)
+    
+    duration = time.time() - t0
+    log.debug(f"[BasicPitch] Finished for {instrument} in {duration:.2f}s. Found {len(notes)} notes.")
     return MidiTrack(instrument=instrument, notes=notes)
 
 
@@ -146,6 +156,8 @@ def transcribe_onsets_frames(waveform: torch.Tensor, sr: int) -> MidiTrack:
     It resamples the audio to the package's expected sample rate and converts
     predicted note events to our normalized format.
     """
+    t0 = time.time()
+    log.debug(f"[OnsetsFrames] Starting transcription")
     wav = _to_mono_tensor(waveform)
 
     try:
@@ -172,10 +184,14 @@ def transcribe_onsets_frames(waveform: torch.Tensor, sr: int) -> MidiTrack:
 
     # Model inference (CPU by default)
     model = PianoTranscription(device="cpu")
+    log.debug("Running Onsets-and-Frames transcription...")
     out = model.transcribe(wav.numpy(), output_midi_path=None)  # type: ignore[arg-type]
     # Try common keys for note events
     note_events = out.get("note_events") or out.get("est_note_events") or []
     notes = _bp_note_events_to_list(note_events)
+    
+    duration = time.time() - t0
+    log.debug(f"[OnsetsFrames] Finished in {duration:.2f}s. Found {len(notes)} notes.")
     return MidiTrack(instrument="piano", notes=notes)
 
 
@@ -192,6 +208,8 @@ def _transcribe_crepe_mono_tensor(waveform: torch.Tensor, sr: int, instrument: s
     - Resamples to 16 kHz if needed using torchaudio or librosa.
     - Segments voiced regions via periodicity threshold and converts to notes.
     """
+    t0 = time.time()
+    log.debug(f"[CREPE] Starting transcription for {instrument}")
     wav = _to_mono_tensor(waveform)
 
     try:
@@ -219,6 +237,7 @@ def _transcribe_crepe_mono_tensor(waveform: torch.Tensor, sr: int, instrument: s
     if hasattr(tc, "decode") and hasattr(tc.decode, "viterbi"):
         decoder = tc.decode.viterbi
 
+    log.debug(f"Running CREPE prediction for {instrument}...")
     with torch.no_grad():
         f0, pd = tc.predict(
             wav.unsqueeze(0),
@@ -262,7 +281,9 @@ def _transcribe_crepe_mono_tensor(waveform: torch.Tensor, sr: int, instrument: s
             if offset <= onset:
                 offset = onset + 1e-3
             notes.append((onset, offset, pitch, vel))
-
+    
+    duration = time.time() - t0
+    log.debug(f"[CREPE] Finished for {instrument} in {duration:.2f}s. Found {len(notes)} notes.")
     return MidiTrack(instrument=instrument, notes=notes)
 
 
