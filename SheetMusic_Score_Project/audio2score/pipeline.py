@@ -13,11 +13,11 @@ import logging
 import torch
 
 from .audio_io import load_audio
+from .detection import detect_instruments
+from .separation import separate_demucs
 
 log = logging.getLogger(__name__)
-from .detection import detect_instruments
-from .separation import separate_demucs, map_stems_to_instruments
-from .transcription import pick_transcriber, MidiTrack
+from .transcription import pick_transcriber, MidiTrack, transcribe_mix_to_bundle
 from .packaging import merge_tracks, export_midi, export_musicxml
 
 try:
@@ -27,7 +27,11 @@ except Exception:  # pragma: no cover
 
 
 def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]:
-    """Run the detector → separator → transcriber → packager sequence.
+    """Run the audio-to-score pipeline.
+
+    Supports two modes:
+    1. Cascading: Detect -> Separate -> Transcribe (per stem) -> Package
+    2. End-to-End: Detect (optional) -> Transcribe (mix to bundle) -> Package
 
     Args:
         input_audio: Path to input audio file.
@@ -42,6 +46,9 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
     psep = cfg.pipeline.separator
     ptx = cfg.pipeline.transcriber
     pexp = cfg.pipeline.export
+    
+    # Determine pipeline mode (default to cascading for backward compatibility)
+    mode = getattr(cfg.pipeline, "mode", "cascading").lower()
 
     start_all = time.time()
 
@@ -50,12 +57,12 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
     if ml_enabled and mlflow is not None:
         mlflow.set_tracking_uri(str(cfg.pipeline.logging.mlflow.tracking_uri))
         mlflow.set_experiment(str(cfg.pipeline.logging.mlflow.experiment_name))
-        ml_ctx = mlflow.start_run(run_name="audio2score-infer")
+        ml_ctx = mlflow.start_run(run_name=f"audio2score-{mode}")
     else:
         ml_ctx = None
 
     artifacts: Dict[str, str] = {}
-    stats: Dict[str, Any] = {"timings": {}}
+    stats: Dict[str, Any] = {"timings": {}, "mode": mode}
 
     try:
         # 1) Load
@@ -114,80 +121,127 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
         else:
             log.info("Instrument detection skipped (disabled in config).")
 
-        # 3) Separate (optional)
-        log.info("=" * 60)
-        log.info("[Stage 3/6] Source Separation")
-        log.info("=" * 60)
-        stems = {"mix": wav}
-        if bool(getattr(psep, "enabled", True)):
-            model_name = str(getattr(psep, "model", "htdemucs"))
-            log.info(f"Separator Model: {model_name}")
-            t2 = time.time()
-            stems = separate_demucs(
-                input_audio,
-                sample_rate=sr,
-                model_name=model_name,
-                source=str(getattr(psep, "source", "hub")),
-                checkpoint_path=getattr(psep, "checkpoint_path", None),
-            )
-            sep_duration = time.time() - t2
-            stats["timings"]["separate_s"] = sep_duration
-            log.info(f"Separation complete.")
-            log.info(f"  - Stems Created: {list(stems.keys())}")
-            log.info(f"  - Separation Time: {sep_duration:.4f}s")
-        else:
-            log.info("Source separation skipped (disabled in config).")
-        stats["stems"] = list(stems.keys())
-
-        # 4) Transcribe per stem
-        log.info("=" * 60)
-        log.info("[Stage 4/6] Transcription")
-        log.info("=" * 60)
-        t3 = time.time()
+        # --- Branching Logic ---
         tracks: Dict[str, MidiTrack] = {}
-
-        # Apply mapping from config (e.g., htdemucs: vocals/drums/bass/other)
-        stem_map = dict(getattr(psep, "stem_map", {}))
-        mapped_stems: Dict[str, torch.Tensor] = {}
-        name_count: Dict[str, int] = {}
-
-        for stem_name, stem_wav in stems.items():
-            instr = stem_map.get(stem_name, stem_name)
-            key = instr
-            if key in mapped_stems:
-                idx = name_count.get(instr, 1) + 1
-                name_count[instr] = idx
-                key = f"{instr}_{idx}"
-            else:
-                name_count[instr] = 1
-            mapped_stems[key] = stem_wav
-
-        for instr, stem_wav in mapped_stems.items():
-            backend = str(getattr(ptx, "per_instrument", {}).get(instr, ptx.default))
-            log.info(f"Processing Instrument: {instr}")
-            log.info(f"  - Backend: {backend}")
-            
-            instr_t0 = time.time()
-            transcriber = pick_transcriber(instr, default=backend)
-            try:
-                track = transcriber(stem_wav, sr)  # unified (waveform, sr) interface
-                instr_duration = time.time() - instr_t0
-                log.info(f"  - Notes Found: {len(track.notes)}")
-                log.info(f"  - Time: {instr_duration:.4f}s")
-            except Exception as e:
-                log.warning(f"  - Transcription failed for {instr}: {e}. Using empty track.")
-                from .transcription import MidiTrack as _MidiTrack
-                track = _MidiTrack(instrument=instr, notes=[])
-
-            tracks[instr] = track
         
-        transcribe_duration = time.time() - t3
-        stats["timings"]["transcribe_s"] = transcribe_duration
+        if mode == "cascading":
+            # 3) Separate (optional)
+            log.info("=" * 60)
+            log.info("[Stage 3/6] Source Separation (Cascading Mode)")
+            log.info("=" * 60)
+            stems = {"mix": wav}
+            if bool(getattr(psep, "enabled", True)):
+                model_name = str(getattr(psep, "model", "htdemucs"))
+                log.info(f"Separator Model: {model_name}")
+                t2 = time.time()
+                stems = separate_demucs(
+                    input_audio,
+                    sample_rate=sr,
+                    model_name=model_name,
+                    source=str(getattr(psep, "source", "hub")),
+                    checkpoint_path=getattr(psep, "checkpoint_path", None),
+                )
+                sep_duration = time.time() - t2
+                stats["timings"]["separate_s"] = sep_duration
+                log.info(f"Separation complete.")
+                log.info(f"  - Stems Created: {list(stems.keys())}")
+                log.info(f"  - Separation Time: {sep_duration:.4f}s")
+            else:
+                log.info("Source separation skipped (disabled in config).")
+            stats["stems"] = list(stems.keys())
+
+            # 4) Transcribe per stem
+            log.info("=" * 60)
+            log.info("[Stage 4/6] Transcription (Cascading Mode)")
+            log.info("=" * 60)
+            t3 = time.time()
+            
+            # Apply mapping from config (e.g., htdemucs: vocals/drums/bass/other)
+            stem_map = dict(getattr(psep, "stem_map", {}))
+            mapped_stems: Dict[str, torch.Tensor] = {}
+            name_count: Dict[str, int] = {}
+
+            for stem_name, stem_wav in stems.items():
+                instr = stem_map.get(stem_name, stem_name)
+                key = instr
+                if key in mapped_stems:
+                    idx = name_count.get(instr, 1) + 1
+                    name_count[instr] = idx
+                    key = f"{instr}_{idx}"
+                else:
+                    name_count[instr] = 1
+                mapped_stems[key] = stem_wav
+
+            for instr, stem_wav in mapped_stems.items():
+                backend = str(getattr(ptx, "per_instrument", {}).get(instr, ptx.default))
+                log.info(f"Processing Instrument: {instr}")
+                log.info(f"  - Backend: {backend}")
+                
+                instr_t0 = time.time()
+                transcriber = pick_transcriber(instr, default=backend)
+                try:
+                    track = transcriber(stem_wav, sr)  # unified (waveform, sr) interface
+                    instr_duration = time.time() - instr_t0
+                    log.info(f"  - Notes Found: {len(track.notes)}")
+                    log.info(f"  - Time: {instr_duration:.4f}s")
+                except Exception as e:
+                    log.warning(f"  - Transcription failed for {instr}: {e}. Using empty track.")
+                    from .transcription import MidiTrack as _MidiTrack
+                    track = _MidiTrack(instrument=instr, notes=[])
+
+                tracks[instr] = track
+            
+            transcribe_duration = time.time() - t3
+            stats["timings"]["transcribe_s"] = transcribe_duration
+
+        elif mode == "end2end":
+            # Skip Separation
+            log.info("=" * 60)
+            log.info("[Stage 3/6] Source Separation (Skipped for End-to-End Mode)")
+            log.info("=" * 60)
+            stats["timings"]["separate_s"] = 0.0
+            stats["stems"] = ["mix"]
+
+            # 4) Transcribe Mix directly
+            log.info("=" * 60)
+            log.info("[Stage 4/6] Transcription (End-to-End Mode)")
+            log.info("=" * 60)
+            t3 = time.time()
+            
+            e2e_backend = str(getattr(ptx, "e2e_backend", "mt3"))
+            e2e_model_path = getattr(ptx, "e2e_model_path", None)
+            e2e_vocab_path = getattr(ptx, "e2e_vocab_path", None)
+            
+            log.info(f"Processing Mix with End-to-End Backend: {e2e_backend}")
+            
+            try:
+                # Call the mix transcriber which returns a MidiBundle directly
+                # We need to unpack it into our local 'tracks' dict
+                bundle = transcribe_mix_to_bundle(
+                    wav, 
+                    sr, 
+                    backend=e2e_backend,
+                    model_path=e2e_model_path,
+                    vocab_path=e2e_vocab_path
+                )
+                tracks = bundle.tracks
+                log.info(f"  - Tracks Found: {list(tracks.keys())}")
+            except Exception as e:
+                log.error(f"End-to-End transcription failed: {e}")
+                # Fallback to empty tracks if needed or re-raise
+                tracks = {}
+
+            transcribe_duration = time.time() - t3
+            stats["timings"]["transcribe_s"] = transcribe_duration
+
+        else:
+            raise ValueError(f"Unknown pipeline mode: {mode}. Use 'cascading' or 'end2end'.")
+
         # Basic metric: total note count across tracks
         stats["note_count"] = int(sum(len(t.notes) for t in tracks.values()))
         log.info(f"Transcription Stage Complete.")
         log.info(f"  - Total Notes: {stats['note_count']}")
-        log.info(f"  - Total Transcription Time: {transcribe_duration:.4f}s")
+        log.info(f"  - Total Transcription Time: {stats['timings']['transcribe_s']:.4f}s")
 
         # 5) Tempo estimation (if not provided) before packaging
         log.info("=" * 60)
@@ -251,9 +305,10 @@ def run_pipeline(input_audio: str, cfg) -> Tuple[Dict[str, str], Dict[str, Any]]
         # MLflow logging
         if ml_ctx is not None and mlflow is not None:
             mlflow.log_params({
+                "mode": mode,
                 "detector_name": str(pdet.name),
-                "separator_name": str(psep.name),
-                "transcriber_default": str(ptx.default),
+                "separator_name": str(psep.name) if mode == "cascading" else "N/A",
+                "transcriber_default": str(ptx.default) if mode == "cascading" else str(getattr(ptx, "e2e_backend", "mt3")),
                 "sample_rate": int(pio.sample_rate),
             })
             if detected:

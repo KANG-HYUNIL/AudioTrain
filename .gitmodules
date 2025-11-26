@@ -1,0 +1,5 @@
+[submodule "SheetMusic_Score_Project/external/mt3-pytorch"]
+	path = SheetMusic_Score_Project/external/mt3-pytorch
+	url = https://github.com/kunato/mt3-pytorch.git
+
+

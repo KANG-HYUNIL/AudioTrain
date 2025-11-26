@@ -1,5 +1,11 @@
 # Inference-first audio-to-score pipeline configuration (Hydra group: pipeline)
 
+# Pipeline Execution Mode
+# mode: cascading | end2end
+# - cascading: Detection -> Separation -> Transcription (per stem)
+# - end2end: Detection (Optional) -> Transcription (Mix to MIDI directly)
+mode: cascading
+
 io:
   input_path: ./inputs/sample.wav  # default demo input (place your audio files in ./inputs/)
   output_dir: ./outputs      # where MIDI/MusicXML/logs are written
@@ -27,6 +33,7 @@ detector:
   checkpoint_path: null    # when source=local, provide a local checkpoint path
 
 # Source separation backend. Demucs by default. Stems mapped to instrument groups.
+# Used ONLY when mode='cascading'
 separator:
   enabled: true
   name: demucs            
@@ -41,15 +48,23 @@ separator:
   source: hub              # hub | local
   checkpoint_path: null    # when source=local, provide a local checkpoint path
 
-# Transcription backend selection per instrument; fallback to default
+# Transcription backend selection
+# 1. Cascading Mode: Uses 'default' and 'per_instrument'
+# 2. End2End Mode: Uses 'e2e_backend' (mt3 | yourmt3 | perceiver_tf | etc.)
 transcriber:
-  default: basic_pitch        # basic_pitch | onsets_frames | crepe_mono
+  # --- Cascading Settings ---
+  default: omnizart             # omnizart | basic_pitch | onsets_frames | crepe_mono
   per_instrument:
-    piano: onsets_frames
-    guitar: basic_pitch
-    bass: basic_pitch
-    drums: crepe_mono       # placeholder (drum transcription TBD)
-    vocals: basic_pitch
+    piano: omnizart             # or onsets_frames
+    guitar: omnizart
+    bass: omnizart
+    drums: omnizart
+    vocals: omnizart
+  
+  # --- End-to-End Settings ---
+  e2e_backend: mt3            # mt3 | yourmt3 | perceiver_tf | transkun
+  e2e_model_path: null        # Path to local checkpoint if needed
+  e2e_vocab_path: null        # Path to vocabulary file (for MT3/YourMT3)
 
 
 # Packaging/export

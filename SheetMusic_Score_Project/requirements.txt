@@ -36,6 +36,13 @@ basic-pitch>=0.2.0
 pretty_midi>=0.2.10
 torchcrepe>=0.0.23   # optional: for 'crepe_mono' backend
 piano_transcription_inference>=0.0.5  # optional: for 'onsets_frames' backend
+omnizart>=0.5.0      # optional: for 'omnizart' backend
+
+# MT3 Dependencies
+ddsp>=3.3.4
+t5>=0.9.3
+note-seq>=0.0.3
+einops>=0.4.1
 
 # MusicXML export (optional)
 music21>=9.1

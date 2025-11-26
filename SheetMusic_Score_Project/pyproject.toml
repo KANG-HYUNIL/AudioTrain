@@ -20,6 +20,11 @@ export = ["music21>=9.1"]
 transcription = [
     "torchcrepe>=0.0.23",
     "piano_transcription_inference>=0.0.5",
+    "omnizart>=0.5.0",
+    "ddsp>=3.3.4",
+    "t5>=0.9.3",
+    "note-seq>=0.0.3",
+    "einops>=0.4.1",
 ]
 
 [dependency-groups]

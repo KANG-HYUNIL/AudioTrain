@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from omegaconf import DictConfig, OmegaConf
 import hydra
+
 import logging
 
 from audio2score.pipeline import run_pipeline
