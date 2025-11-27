@@ -52,3 +52,14 @@ jupyterlab>=4.2
 # Dev
 black>=24.3
 isort>=5.13
+
+# YourMT3 Dependencies
+python-dotenv
+yt-dlp
+https://github.com/coletdjnz/yt-dlp-youtube-oauth2/archive/refs/heads/master.zip
+mido
+git+https://github.com/craffel/mir_eval.git
+lightning>=2.2.1
+deprecated
+wandb
+gradio_log
