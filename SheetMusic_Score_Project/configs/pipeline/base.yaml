@@ -53,13 +53,13 @@ separator:
 # 2. End2End Mode: Uses 'e2e_backend' (mt3 | yourmt3 | perceiver_tf | etc.)
 transcriber:
   # --- Cascading Settings ---
-  default: omnizart             # omnizart | basic_pitch | onsets_frames | crepe_mono
+  default: basic_pitch             # basic_pitch | onsets_frames | crepe_mono
   per_instrument:
-    piano: omnizart             # or onsets_frames
-    guitar: omnizart
-    bass: omnizart
-    drums: omnizart
-    vocals: omnizart
+    piano: basic_pitch             # or onsets_frames
+    guitar: basic_pitch
+    bass: basic_pitch
+    drums: basic_pitch
+    vocals: basic_pitch
   
   # --- End-to-End Settings ---
   e2e_backend: mt3            # mt3 | yourmt3 | perceiver_tf | transkun
