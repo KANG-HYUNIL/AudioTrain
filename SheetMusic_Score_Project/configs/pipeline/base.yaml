@@ -53,16 +53,16 @@ separator:
 # 2. End2End Mode: Uses 'e2e_backend' (mt3 | yourmt3 | perceiver_tf | etc.)
 transcriber:
   # --- Cascading Settings ---
-  default: basic_pitch             # basic_pitch | onsets_frames | crepe_mono
+  default: basic_pitch             # basic_pitch | onsets_frames | crepe_mono | yourmt3 | mt3
   per_instrument:
-    piano: basic_pitch             # or onsets_frames
+    piano: basic_pitch             # or onsets_frames, yourmt3
     guitar: basic_pitch
     bass: basic_pitch
     drums: basic_pitch
     vocals: basic_pitch
   
   # --- End-to-End Settings ---
-  e2e_backend: mt3            # mt3 | yourmt3 | perceiver_tf | transkun
+  e2e_backend: yourmt3            # mt3 | yourmt3 
   e2e_model_path: null        # Path to local checkpoint if needed
   e2e_vocab_path: null        # Path to vocabulary file (for MT3/YourMT3)
 

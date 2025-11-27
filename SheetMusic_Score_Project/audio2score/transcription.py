@@ -359,6 +359,82 @@ def _reg_crepe_mono(wav: torch.Tensor, sr: int, instrument: str) -> MidiTrack:
     """Registry entry for torchcrepe monophonic backend."""
     return _transcribe_crepe_mono_tensor(wav, sr, instrument=instrument)
 
+@TRANSCRIBER_REGISTRY.register("yourmt3")
+def _reg_yourmt3(wav: torch.Tensor, sr: int, instrument: str) -> MidiTrack:
+    """Registry entry for YourMT3 backend (Cascading mode).
+    
+    Runs the full E2E model on the stem and filters for the requested instrument.
+    """
+    # Run full transcription
+    # We don't pass a specific model path here, relying on defaults or env vars for now
+    # In a real scenario, we might want to inject config here.
+    bundle = _transcribe_yourmt3(wav, sr, model_path=None, vocab_path=None)
+    
+    # Filter for the requested instrument
+    # 1. Try exact match
+    if instrument in bundle.tracks:
+        return bundle.tracks[instrument]
+    
+    # 2. Try case-insensitive match
+    for name, track in bundle.tracks.items():
+        if name.lower() == instrument.lower():
+            track.instrument = instrument # Normalize name
+            return track
+            
+    # 3. Heuristic: If we asked for 'drums', look for 'Drums' or program 128
+    #    If we asked for 'piano', look for 'Piano' or program 0
+    #    For now, if we can't find it, return the track with the most notes 
+    #    (assuming the stem contains mostly that instrument)
+    best_track = None
+    max_notes = -1
+    
+    for name, track in bundle.tracks.items():
+        # Simple heuristic mapping
+        if instrument == "drums" and ("drum" in name.lower()):
+            return track
+        if instrument == "piano" and ("piano" in name.lower()):
+            return track
+            
+        if len(track.notes) > max_notes:
+            max_notes = len(track.notes)
+            best_track = track
+            
+    if best_track:
+        log.info(f"[YourMT3] Requested '{instrument}' but found {[t for t in bundle.tracks]}. Returning '{best_track.instrument}' as best guess.")
+        best_track.instrument = instrument
+        return best_track
+        
+    return MidiTrack(instrument=instrument, notes=[])
+
+
+@TRANSCRIBER_REGISTRY.register("mt3")
+def _reg_mt3(wav: torch.Tensor, sr: int, instrument: str) -> MidiTrack:
+    """Registry entry for MT3 backend (Cascading mode)."""
+    bundle = _transcribe_mt3(wav, sr, model_path=None)
+    
+    # Similar filtering logic as YourMT3
+    if instrument in bundle.tracks:
+        return bundle.tracks[instrument]
+        
+    for name, track in bundle.tracks.items():
+        if name.lower() == instrument.lower():
+            track.instrument = instrument
+            return track
+            
+    # Fallback
+    best_track = None
+    max_notes = -1
+    for name, track in bundle.tracks.items():
+        if len(track.notes) > max_notes:
+            max_notes = len(track.notes)
+            best_track = track
+            
+    if best_track:
+        best_track.instrument = instrument
+        return best_track
+        
+    return MidiTrack(instrument=instrument, notes=[])
+
 
 # -----------------------------------------------------------------------------
 # End-to-End (Mix) Transcription
@@ -400,11 +476,17 @@ def transcribe_mix_to_bundle(
         return MidiBundle()
 
 
+# Global cache for models to avoid reloading per stem in cascading mode
+_MT3_MODEL_CACHE = None
+_YOURMT3_MODEL_CACHE = None
+
+
 def _transcribe_mt3(waveform: torch.Tensor, sr: int, model_path: Optional[str]) -> MidiBundle:
     """Transcribe using MT3 (Music Transformer) via mt3-pytorch submodule.
     
     Requires 'external/mt3-pytorch' submodule and dependencies (ddsp, t5, note-seq).
     """
+    global _MT3_MODEL_CACHE
     t0 = time.time()
     log.info("[MT3] Starting transcription...")
 
@@ -436,17 +518,10 @@ def _transcribe_mt3(waveform: torch.Tensor, sr: int, model_path: Optional[str]) 
     # 3. Prepare Output Path
     with tempfile.NamedTemporaryFile(suffix=".mid", delete=False) as tmp_mid:
         tmp_mid_path = tmp_mid.name
-    # InferenceHandler appends .mid extension automatically if not present, 
-    # but let's handle it carefully. The library code does:
-    # if outpath is None: ... else: os.makedirs(...); note_seq...to_midi_file(..., outpath)
-    # So we should provide the full path.
-
+    
     try:
         # Save waveform
         wav = _to_mono_tensor(waveform)
-        # MT3 expects 16kHz usually, but the InferenceHandler loads with librosa at self.SAMPLE_RATE (16000)
-        # So we can save at current SR, librosa will resample inside InferenceHandler.
-        # However, saving at 16k is safer/faster.
         target_sr = 16000
         try:
             import torchaudio
@@ -459,28 +534,28 @@ def _transcribe_mt3(waveform: torch.Tensor, sr: int, model_path: Optional[str]) 
             torchaudio.save(tmp_wav_path, wav_save, target_sr)
         except ImportError:
             import soundfile as sf
-            # Resample with librosa if needed, or just save and let mt3 handle it
-            # Let's just save and let mt3 (librosa) handle resampling to avoid extra deps here if possible
-            sf.write(tmp_wav_path, wav.numpy(), sr)
+            sf.write(tmp_wav_path, wav.numpy(), target_sr)
 
-        # 4. Initialize Model
-        if model_path is None:
-            # Default to a 'checkpoints/mt3' dir if not specified
-            model_path = str(project_root / "checkpoints" / "mt3")
-            log.warning(f"[MT3] No model_path provided. Trying default: {model_path}")
-        
-        if not os.path.exists(model_path):
-             log.error(f"[MT3] Model checkpoint not found at {model_path}.")
-             return MidiBundle()
+        # 4. Initialize Model (Cached)
+        if _MT3_MODEL_CACHE is None:
+            if model_path is None:
+                # Default to a 'checkpoints/mt3' dir if not specified
+                model_path = str(project_root / "checkpoints" / "mt3")
+                log.warning(f"[MT3] No model_path provided. Trying default: {model_path}")
+            
+            if not os.path.exists(model_path):
+                 log.error(f"[MT3] Model checkpoint not found at {model_path}.")
+                 return MidiBundle()
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        log.info(f"[MT3] Loading model from {model_path} on {device}...")
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            log.info(f"[MT3] Loading model from {model_path} on {device}...")
+            
+            _MT3_MODEL_CACHE = InferenceHandler(
+                weight_path=model_path,
+                device=torch.device(device)
+            )
         
-        # InferenceHandler expects the directory containing 'mt3.pth' and 'config.json'
-        inference = InferenceHandler(
-            weight_path=model_path,
-            device=torch.device(device)
-        )
+        inference = _MT3_MODEL_CACHE
 
         # 5. Run Inference
         log.info(f"[MT3] Running inference...")
@@ -492,22 +567,22 @@ def _transcribe_mt3(waveform: torch.Tensor, sr: int, model_path: Optional[str]) 
         )
         
         # 6. Parse Result
-        if not os.path.exists(tmp_mid_path):
-            # Sometimes it might append .mid?
-            if os.path.exists(tmp_mid_path + ".mid"):
-                tmp_mid_path += ".mid"
-            else:
-                log.error("[MT3] Output MIDI file was not created.")
-                return MidiBundle()
+        # Check for .mid extension appending behavior
+        output_file = tmp_mid_path
+        if not os.path.exists(output_file) and os.path.exists(output_file + ".mid"):
+            output_file += ".mid"
+            
+        if not os.path.exists(output_file):
+             log.error("[MT3] Output MIDI file was not created.")
+             return MidiBundle()
 
-        pm = pretty_midi.PrettyMIDI(tmp_mid_path)
+        pm = pretty_midi.PrettyMIDI(output_file)
         bundle = MidiBundle()
         
         for instr in pm.instruments:
             # Determine instrument name
             name = instr.name.strip()
             if not name:
-                # Fallback to program name
                 try:
                     name = pretty_midi.program_to_instrument_name(instr.program)
                 except:
@@ -518,7 +593,7 @@ def _transcribe_mt3(waveform: torch.Tensor, sr: int, model_path: Optional[str]) 
             for note in instr.notes:
                 notes.append((note.start, note.end, note.pitch, note.velocity))
             
-            # Handle duplicate names by appending index
+            # Handle duplicate names
             base_name = name
             idx = 1
             while name in bundle.tracks:
@@ -546,20 +621,195 @@ def _transcribe_mt3(waveform: torch.Tensor, sr: int, model_path: Optional[str]) 
 
 
 def _transcribe_yourmt3(waveform: torch.Tensor, sr: int, model_path: Optional[str], vocab_path: Optional[str]) -> MidiBundle:
-    """Stub for YourMT3 transcription.
+    """Transcribe using YourMT3 backend.
     
-    YourMT3 is a custom T5-based model for arbitrary instrument transcription.
+    Requires 'external/YourMT3' and its dependencies.
     """
+    global _YOURMT3_MODEL_CACHE
     t0 = time.time()
-    log.info("[YourMT3] Starting transcription (Stub)...")
+    log.info("[YourMT3] Starting transcription...")
     
-    # TODO: Implement YourMT3 inference
+    # 1. Setup paths
+    project_root = Path(__file__).parent.parent
+    yourmt3_dir = project_root / "external" / "YourMT3"
     
-    bundle = MidiBundle()
-    duration = time.time() - t0
-    log.info(f"[YourMT3] Finished in {duration:.2f}s. (Placeholder: No notes generated)")
-    return bundle
+    if not yourmt3_dir.exists():
+        log.error(f"[YourMT3] Directory not found at {yourmt3_dir}.")
+        return MidiBundle()
 
+    # Add to sys.path
+    if str(yourmt3_dir) not in sys.path:
+        sys.path.append(str(yourmt3_dir))
+        # Also add amt/src as done in YourMT3/app.py
+        amt_src = yourmt3_dir / "amt" / "src"
+        if amt_src.exists() and str(amt_src) not in sys.path:
+            sys.path.append(str(amt_src))
+
+    try:
+        import model_helper
+        import pretty_midi
+    except ImportError as e:
+        log.error(f"[YourMT3] Failed to import modules: {e}. Check requirements.")
+        return MidiBundle()
+
+    # 2. Prepare Audio (Save to temp WAV)
+    # YourMT3 requires a file path for input
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+        tmp_wav_path = tmp_wav.name
+        
+    try:
+        # Save waveform
+        wav = _to_mono_tensor(waveform)
+        # YourMT3 handles resampling, but saving at a standard rate is good.
+        try:
+            import torchaudio
+            if wav.dim() == 1:
+                wav_save = wav.unsqueeze(0)
+            else:
+                wav_save = wav
+            torchaudio.save(tmp_wav_path, wav_save, sr)
+        except ImportError:
+            import soundfile as sf
+            sf.write(tmp_wav_path, wav.numpy(), sr)
+
+        # 3. Initialize Model (Cached)
+        if _YOURMT3_MODEL_CACHE is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            log.info(f"[YourMT3] Loading model on {device}...")
+            
+            # Construct args for load_model_checkpoint
+            # We use the default "YPTF.MoE+Multi (noPS)" configuration from app.py
+            # unless model_path is provided.
+            
+            # Default checkpoint name in YourMT3 repo
+            default_ckpt = "mc13_256_g4_all_v7_mt3f_sqr_rms_moe_wf4_n8k2_silu_rope_rp_b36_nops@last.ckpt"
+            
+            if model_path:
+                checkpoint = model_path
+            else:
+                # Try to find the default checkpoint in checkpoints/yourmt3 or external/YourMT3
+                possible_paths = [
+                    project_root / "checkpoints" / "yourmt3" / default_ckpt,
+                    yourmt3_dir / default_ckpt
+                ]
+                checkpoint = None
+                for p in possible_paths:
+                    if p.exists():
+                        checkpoint = str(p)
+                        break
+                
+                if checkpoint is None:
+                    log.warning(f"[YourMT3] Checkpoint {default_ckpt} not found. Attempting to download or fail...")
+                    # For now, let's assume the user has it or let model_helper fail
+                    checkpoint = default_ckpt 
+
+            # Args based on "YPTF.MoE+Multi (noPS)"
+            # Note: These args must match the checkpoint architecture!
+            args = [
+                checkpoint, 
+                '-p', '2024', 
+                '-tk', 'mc13_full_plus_256', 
+                '-dec', 'multi-t5',
+                '-nl', '26', 
+                '-enc', 'perceiver-tf', 
+                '-sqr', '1', 
+                '-ff', 'moe',
+                '-wf', '4', 
+                '-nmoe', '8', 
+                '-kmoe', '2', 
+                '-act', 'silu', 
+                '-epe', 'rope',
+                '-rp', '1', 
+                '-ac', 'spec', 
+                '-hop', '300', 
+                '-atc', '1', 
+                '-pr', '16' if device == 'cuda' else '32'
+            ]
+            
+            # Temporarily change CWD to YourMT3 dir because it might rely on relative paths for config/vocab
+            original_cwd = os.getcwd()
+            os.chdir(yourmt3_dir)
+            try:
+                _YOURMT3_MODEL_CACHE = model_helper.load_model_checkpoint(args=args, device=device)
+            finally:
+                os.chdir(original_cwd)
+        
+        model = _YOURMT3_MODEL_CACHE
+
+        # 4. Run Inference
+        log.info(f"[YourMT3] Running inference...")
+        
+        # Prepare audio_info dict
+        audio_info = {
+            'filepath': tmp_wav_path,
+            'track_name': 'temp_output'
+        }
+        
+        # YourMT3 writes output to ./model_output/ relative to CWD
+        # We should control this. model_helper.transcribe writes to './model_output/'
+        # We need to handle this side effect.
+        
+        # Create a temp dir for output to avoid cluttering
+        with tempfile.TemporaryDirectory() as temp_out_dir:
+            # We need to monkeypatch or change CWD because transcribe hardcodes './model_output/'
+            # Actually, looking at model_helper.py:
+            # midifile =  os.path.join('./model_output/', audio_info['track_name']  + '.mid')
+            # It creates ./model_output/ if not exists inside write_model_output_as_midi
+            
+            original_cwd = os.getcwd()
+            os.chdir(temp_out_dir)
+            try:
+                # Run transcription
+                # Note: model_helper.transcribe prints a lot and uses Timer
+                midi_path = model_helper.transcribe(model, audio_info)
+            finally:
+                os.chdir(original_cwd)
+                
+            # The midi_path returned is relative to temp_out_dir (e.g. "./model_output/temp_output.mid")
+            full_midi_path = os.path.join(temp_out_dir, midi_path)
+            
+            if not os.path.exists(full_midi_path):
+                log.error(f"[YourMT3] Output MIDI not found at {full_midi_path}")
+                return MidiBundle()
+                
+            # 5. Parse Result
+            pm = pretty_midi.PrettyMIDI(full_midi_path)
+            bundle = MidiBundle()
+            
+            for instr in pm.instruments:
+                name = instr.name.strip()
+                if not name:
+                    try:
+                        name = pretty_midi.program_to_instrument_name(instr.program)
+                    except:
+                        name = f"program_{instr.program}"
+                
+                notes = []
+                for note in instr.notes:
+                    notes.append((note.start, note.end, note.pitch, note.velocity))
+                
+                base_name = name
+                idx = 1
+                while name in bundle.tracks:
+                    name = f"{base_name}_{idx}"
+                    idx += 1
+                
+                bundle.tracks[name] = MidiTrack(instrument=name, notes=notes)
+
+            duration = time.time() - t0
+            total_notes = sum(len(t.notes) for t in bundle.tracks.values())
+            log.info(f"[YourMT3] Finished in {duration:.2f}s. Found {len(bundle.tracks)} tracks, {total_notes} notes.")
+            return bundle
+
+    except Exception as e:
+        log.error(f"[YourMT3] Transcription failed: {e}", exc_info=True)
+        return MidiBundle()
+    finally:
+        if os.path.exists(tmp_wav_path):
+            try:
+                os.remove(tmp_wav_path)
+            except OSError:
+                pass
 
 def _transcribe_perceiver_tf(waveform: torch.Tensor, sr: int, model_path: Optional[str]) -> MidiBundle:
     """Stub for Perceiver TF transcription."""
@@ -577,4 +827,4 @@ def _transcribe_perceiver_tf(waveform: torch.Tensor, sr: int, model_path: Option
 
 
 
- 
+
